@@ -1,0 +1,4 @@
+export type DocumentType = "Contrato de prestação de serviços" | "Termo aditivo" | "Ordem de serviço" | "Ordem de visita" | "Recibo de pagamento" | "Termo de conclusão" | "Termo de entrega" | "Comprovante de recebimento";
+export type SignatureStatus = "Pendente de assinatura" | "Assinado (controle interno)";
+export type NexusDocument = { id: string; type: DocumentType; title: string; clientId: string; budgetId?: string; workId?: string; supplierId?: string; professionalId?: string; content: string; signatureStatus: SignatureStatus; version: number; generatedAt?: string; createdAt: string; updatedAt: string };
+export const documentTypes: DocumentType[] = ["Contrato de prestação de serviços", "Termo aditivo", "Ordem de serviço", "Ordem de visita", "Recibo de pagamento", "Termo de conclusão", "Termo de entrega", "Comprovante de recebimento"];

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+coverage/
+.turbo/
+.expo/
+.DS_Store
+
+# Artefatos locais e backups: preservados fora do histórico de código.
+outputs/
+work/
+apps/desktop/release/
+apps/desktop/dist/
+*.sqlite

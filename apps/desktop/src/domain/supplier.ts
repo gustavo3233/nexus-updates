@@ -1,0 +1,4 @@
+export type Supplier = { id: string; name: string; document: string; phone: string; email: string; address: string; commercialContact: string; notes: string; active: boolean; createdAt: string; updatedAt: string };
+export type PurchaseItem = { id: string; description: string; quantity: number; unit: string; unitPrice: number };
+export type Purchase = { id: string; supplierId: string; workId?: string; date: string; expectedDeliveryDate: string; paymentMethod: string; notes: string; documentName?: string; documentPath?: string; items: PurchaseItem[]; totalAmount: number; sourceExpenseId?: string; createdAt: string; updatedAt: string };
+export function purchaseTotal(items: PurchaseItem[]) { return items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0), 0); }

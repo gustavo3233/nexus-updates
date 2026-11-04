@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+  - services/*
+allowBuilds:
+  core-js: set this to true or false
+minimumReleaseAgeExclude:
+  - electron@45.2.1

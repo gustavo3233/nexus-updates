@@ -1,0 +1,25 @@
+import { useEffect, useState } from "react";
+import { defaultFiscalSettings, fiscalConfigurationIssues, type FiscalSettings } from "../domain/fiscal";
+
+type Props = { initial: FiscalSettings | null; onSave: (settings: FiscalSettings) => Promise<void> };
+const input = "mt-1 w-full rounded-lg border border-nexus-border px-3 py-2 text-sm";
+const nullableNumber = (value: string) => value === "" ? null : Number(value);
+
+export function FiscalSettingsPanel({ initial, onSave }: Props) {
+  const [settings, setSettings] = useState<FiscalSettings>(initial ?? defaultFiscalSettings());
+  const [message, setMessage] = useState("");
+  useEffect(() => setSettings(initial ?? defaultFiscalSettings()), [initial]);
+  const set = <K extends keyof FiscalSettings>(key: K, value: FiscalSettings[K]) => setSettings((current) => ({ ...current, [key]: value }));
+  const issues = fiscalConfigurationIssues(settings);
+  const save = async () => {
+    try { await onSave(settings); setMessage("Configuração fiscal salva. A transmissão de NFS-e continua desabilitada nesta fase."); window.alert("Configuração fiscal salva."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Não foi possível salvar as configurações fiscais."); }
+  };
+  return <section className="mt-4 space-y-4 text-sm">
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><b>Fase 2 — preparação interna.</b> Nenhuma DPS será transmitida e nenhum certificado é solicitado, armazenado ou manipulado.</div>
+    <div className="grid grid-cols-2 gap-3"><label>Razão social *<input className={input} value={settings.legalName} onChange={(event) => set("legalName", event.target.value)} /></label><label>CNPJ *<input className={input} value={settings.cnpj} onChange={(event) => set("cnpj", event.target.value)} /></label><label>Inscrição municipal *<input className={input} value={settings.municipalRegistration} onChange={(event) => set("municipalRegistration", event.target.value)} /></label><label>Regime tributário *<input className={input} value={settings.taxRegime} onChange={(event) => set("taxRegime", event.target.value)} placeholder="Confirmar com contador" /></label><label>Município emissor<input className={input} value={settings.municipalityName} onChange={(event) => set("municipalityName", event.target.value)} /></label><label>Código IBGE do município *<input className={input} value={settings.municipalityIbgeCode} onChange={(event) => set("municipalityIbgeCode", event.target.value)} /></label><label>Código de serviço *<input className={input} value={settings.defaultServiceCode} onChange={(event) => set("defaultServiceCode", event.target.value)} placeholder="Confirmar com contador" /></label><label>Série da DPS *<input className={input} value={settings.dpsSeries} onChange={(event) => set("dpsSeries", event.target.value)} placeholder="Definir antes da emissão" /></label><label className="col-span-2">Descrição padrão do serviço *<input className={input} value={settings.defaultServiceDescription} onChange={(event) => set("defaultServiceDescription", event.target.value)} /></label><label>Alíquota de ISS (%) *<input className={input} type="number" min="0" value={settings.issRate ?? ""} onChange={(event) => set("issRate", nullableNumber(event.target.value))} /></label></div>
+    <div className="rounded-lg border p-3"><b>Retenções tributárias</b><p className="mt-1 text-xs text-nexus-muted">Preencha apenas as retenções validadas para o seu regime e serviço. Nenhuma alíquota é presumida.</p><div className="mt-3 grid grid-cols-3 gap-3">{(["issRate", "irrfRate", "pisRate", "cofinsRate", "csllRate", "inssRate"] as const).map((key) => <label key={key} className="text-xs">{({ issRate: "ISS retido", irrfRate: "IRRF", pisRate: "PIS", cofinsRate: "COFINS", csllRate: "CSLL", inssRate: "INSS" })[key]} (%)<input className={input} type="number" min="0" value={settings.retentions[key] ?? ""} onChange={(event) => set("retentions", { ...settings.retentions, [key]: nullableNumber(event.target.value) })} /></label>)}</div><label className="mt-3 block text-xs">Observações / validação fiscal<textarea className={input} value={settings.retentions.notes} onChange={(event) => set("retentions", { ...settings.retentions, notes: event.target.value })} /></label><label className="mt-3 flex items-center gap-2 text-xs font-medium"><input type="checkbox" checked={settings.retentions.confirmed} onChange={(event) => set("retentions", { ...settings.retentions, confirmed: event.target.checked })} />Confirmo que as retenções foram revisadas para este serviço e regime.</label></div>
+    {issues.length > 0 && <div className="rounded-lg bg-slate-50 p-3 text-xs text-nexus-muted"><b>Pendências que bloqueiam futura emissão:</b><ul className="mt-1 list-disc pl-4">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div>}
+    {message && <p className="text-xs text-nexus-muted">{message}</p>}<button className="rounded-lg bg-nexus-primary px-4 py-2 text-sm font-semibold text-white" onClick={save}>Salvar configuração fiscal</button>
+  </section>;
+}

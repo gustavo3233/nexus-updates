@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Nexus Construção e Reformas",
+    "slug": "nexus-construcao-reformas",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.nexus.construcao"
+    },
+    "ios": {
+      "bundleIdentifier": "com.nexus.construcao"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "nexus-construcao-reformas",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "mobile": "pnpm --filter @nexus/mobile start",
+    "mobile:typecheck": "pnpm --filter @nexus/mobile typecheck",
+    "desktop": "pnpm --filter @nexus/desktop dev",
+    "desktop:typecheck": "pnpm --filter @nexus/desktop typecheck",
+    "desktop:build": "pnpm --filter @nexus/desktop build"
+  }
+}
