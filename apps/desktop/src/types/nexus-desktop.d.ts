@@ -15,13 +15,37 @@ declare global {
       openWhatsAppWeb(phone: string): Promise<boolean>;
       openEmailCompose(recipient: string, subject: string, body: string): Promise<boolean>;
     };
+    nexusAuth?: {
+      status(): Promise<{ hasUsers: boolean; activeCompany: Company | null; user: AppUser | null; license: LicenseStatus }>;
+      setupAdmin(details: { username: string; password: string; displayName?: string }): Promise<AppUser>;
+      login(details: { username: string; password: string }): Promise<AppUser>;
+      logout(): Promise<boolean>;
+      updateAccount(details: { username?: string; password?: string; displayName?: string }): Promise<AppUser>;
+      users(): Promise<AppUser[]>;
+      createUser(details: { username: string; password: string; displayName?: string; role?: AppUser["role"]; permissions?: string[] }): Promise<AppUser>;
+      updateUser(userId: string, details: { username?: string; password?: string; displayName?: string; role?: AppUser["role"]; permissions?: string[]; active?: boolean }): Promise<AppUser>;
+    };
+    nexusLicense?: {
+      status(): Promise<LicenseStatus>;
+      activate(key: string): Promise<LicenseStatus>;
+    };
+    nexusUpdates?: {
+      status(): Promise<UpdateStatus>;
+      check(): Promise<UpdateStatus>;
+      download(): Promise<UpdateStatus>;
+      install(): Promise<void>;
+    };
     nexusDatabase?: {
-      snapshot(): Promise<{ activeCompany: Company | null; companies: Company[]; clients: import("../domain/client").Client[]; budgets: import("../domain/budget").Budget[]; financialSheets: import("../domain/financial-sheet").FinancialSheet[]; orders: import("../domain/order").Order[]; clientFiles: import("../domain/client-file").ClientFile[]; works: import("../domain/work").Work[]; financings: import("../domain/financing").Financing[]; ledgerEntries: import("../domain/ledger").LedgerEntry[]; professionals: import("../domain/professional").Professional[]; workDays: import("../domain/professional").WorkDay[]; suppliers: import("../domain/supplier").Supplier[]; purchases: import("../domain/supplier").Purchase[]; documents: import("../domain/document").NexusDocument[]; serviceCompletions: ServiceCompletion[]; nfseDrafts: unknown[]; nfseRecords: NfseRecord[]; nfseAttempts: NfseAttempt[]; fiscalSettings: FiscalSettings | null; settings: import("../domain/settings").Settings | null }>;
+      bootstrap(): Promise<{ activeCompany: Company | null; settings: import("../domain/settings").Settings | null }>;
+      snapshot(): Promise<{ activeCompany: Company | null; companies: Company[]; clients: import("../domain/client").Client[]; budgets: import("../domain/budget").Budget[]; financialSheets: import("../domain/financial-sheet").FinancialSheet[]; orders: import("../domain/order").Order[]; clientFiles: import("../domain/client-file").ClientFile[]; works: import("../domain/work").Work[]; financings: import("../domain/financing").Financing[]; ledgerEntries: import("../domain/ledger").LedgerEntry[]; professionals: import("../domain/professional").Professional[]; workDays: import("../domain/professional").WorkDay[]; suppliers: import("../domain/supplier").Supplier[]; purchases: import("../domain/supplier").Purchase[]; products: import("../domain/product").Product[]; tools: import("../domain/tool").Tool[]; documents: import("../domain/document").NexusDocument[]; serviceCompletions: ServiceCompletion[]; nfseDrafts: unknown[]; nfseRecords: NfseRecord[]; nfseAttempts: NfseAttempt[]; fiscalSettings: FiscalSettings | null; settings: import("../domain/settings").Settings | null }>;
       companies(): Promise<Company[]>;
       createCompany(company: Pick<Company, "legalName" | "tradeName">): Promise<Company>;
       selectCompany(companyId: string): Promise<unknown>;
-      save(entity: "clients" | "budgets" | "financial_sheets" | "orders" | "client_files" | "works" | "ledger_entries" | "professionals" | "suppliers" | "documents", record: unknown): Promise<unknown>;
+      save(entity: "clients" | "budgets" | "financial_sheets" | "orders" | "client_files" | "works" | "ledger_entries" | "professionals" | "suppliers" | "products" | "tools" | "documents", record: unknown): Promise<unknown>;
+      deleteLedgerEntry(entryId: string): Promise<boolean>;
+      deleteFinancialSheet(sheetId: string): Promise<boolean>;
       deleteBudget(budgetId: string): Promise<{ works: number; financialSheets: number; documents: number; ledgerEntries: number; workDays: number; purchases: number }>;
+      deleteOrder(orderId: string): Promise<boolean>;
       saveFinancing(financing: import("../domain/financing").Financing): Promise<import("../domain/financing").Financing>;
       deleteFinancing(financingId: string): Promise<boolean>;
       saveWorkDay(day: import("../domain/professional").WorkDay): Promise<{ day: import("../domain/professional").WorkDay; financialSheet: import("../domain/financial-sheet").FinancialSheet }>;
@@ -39,5 +63,8 @@ declare global {
 }
 
 type Company = { id: string; legalName: string; tradeName: string; createdAt: string; updatedAt: string };
+type AppUser = { id: string; companyId: string; username: string; displayName: string; role: "super_admin" | "admin" | "financeiro" | "operacional" | "visualizador"; permissions: string[]; active: boolean };
+type UpdateStatus = { status: "development" | "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error"; currentVersion: string; availableVersion: string | null; releaseNotes: string[]; progress: number; message: string; feedUrl: string; enabled: boolean };
+type LicenseStatus = { state: "onboarding" | "missing" | "trial_active" | "licensed" | "expired" | "clock_suspicious" | "invalid" | "inactive"; active: boolean; message: string; expiresAt?: string; planCode?: string | null; remainingDays?: number };
 
 export {};

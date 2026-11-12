@@ -2,64 +2,66 @@ import { useMemo, useState } from "react";
 import type { Budget } from "../domain/budget";
 import type { Client } from "../domain/client";
 import type { FiscalSettings, NfseRecord, ServiceCompletion } from "../domain/fiscal";
-import type { Order } from "../domain/order";
+import { orderStatuses, type Order, type OrderStatus } from "../domain/order";
 import type { Settings } from "../domain/settings";
 import type { Work } from "../domain/work";
 import { calculatePricing } from "../services/pricing";
+import { generateOrderPdf } from "../services/order-pdf";
+import { BudgetPdfPreview } from "./BudgetPdfPreview";
 
 type FiscalDraft = { budgetId: string; title: string; serviceDescription: string; paymentDescription: string; serviceValue: number; discounts: number };
-type Props = { budgets: Budget[]; orders: Order[]; works: Work[]; clients: Client[]; settings: Settings; fiscalSettings: FiscalSettings | null; serviceCompletions: ServiceCompletion[]; nfseDrafts: FiscalDraft[]; nfseRecords: NfseRecord[]; onSaveNfseDraft: (budgetId: string, draft: FiscalDraft) => Promise<void>; onConfirmService: (completion: ServiceCompletion) => Promise<void>; onPrepareNfse: (budgetId: string) => Promise<NfseRecord>; onNewBudget: () => void; onNewOrder: () => void; onEditBudget: (budget: Budget) => void; onCreateBudgetFromOrder: (order: Order) => void; onCreateWork: (budget: Budget) => void; onOpenFolder: (id: string) => void; onOpenBudgetInFolder: (budget: Budget) => void; onPdf: (budget: Budget, client: Client) => void; onOrderPdf: (order: Order, client: Client) => void };
+export type BudgetStatusFilter = "Todos" | "Rascunho" | "Aberto" | "Faturado" | "Aprovado" | "Não aprovado";
+type OrderStatusFilter = "Todos" | OrderStatus;
+type BudgetTab = "Orçamentos" | "Ordens de serviço";
+type Props = { budgets: Budget[]; orders: Order[]; works: Work[]; clients: Client[]; settings: Settings; fiscalSettings: FiscalSettings | null; serviceCompletions: ServiceCompletion[]; nfseDrafts: FiscalDraft[]; nfseRecords: NfseRecord[]; initialStatusFilter?: BudgetStatusFilter; onSaveNfseDraft: (budgetId: string, draft: FiscalDraft) => Promise<void>; onConfirmService: (completion: ServiceCompletion) => Promise<void>; onPrepareNfse: (budgetId: string) => Promise<NfseRecord>; onNewBudget: () => void; onNewOrder: () => void; onEditOrder: (order: Order) => void; onDeleteOrder: (orderId: string) => Promise<void>; onEditBudget: (budget: Budget) => void; onCreateBudgetFromOrder: (order: Order) => void; onCreateWork: (budget: Budget) => void; onOpenFolder: (id: string) => void; onOpenBudgetInFolder: (budget: Budget) => void; onPdf: (budget: Budget, client: Client) => void; onOrderPdf: (order: Order, client: Client) => void };
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const field = "mt-1 w-full rounded-lg border border-nexus-border px-3 py-2 text-sm";
+const orderStatusTone: Record<OrderStatus, string> = { Rascunho: "bg-slate-100 text-slate-700", Aberto: "bg-amber-100 text-amber-800", Aprovado: "bg-emerald-100 text-emerald-800", "Não aprovado": "bg-red-100 text-red-800", Concluída: "bg-blue-100 text-blue-800", Cancelada: "bg-red-100 text-red-800" };
 
 export function BudgetsView(props: Props) {
   const { budgets, orders, works, clients, settings, fiscalSettings, serviceCompletions, nfseDrafts, nfseRecords } = props;
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"Todos" | "Rascunho" | "Aberto" | "Faturado" | "Aprovado" | "Não aprovado">("Todos");
+  const [statusFilter, setStatusFilter] = useState<BudgetStatusFilter>(props.initialStatusFilter ?? "Todos");
+  const [orderQuery, setOrderQuery] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState<OrderStatusFilter>("Todos");
+  const [activeTab, setActiveTab] = useState<BudgetTab>("Orçamentos");
   const [confirming, setConfirming] = useState<Budget | null>(null);
   const [issuing, setIssuing] = useState<Budget | null>(null);
   const [notice, setNotice] = useState("");
+  const [openedOrder, setOpenedOrder] = useState<Order | null>(null);
+  const [previewingBudget, setPreviewingBudget] = useState<Budget | null>(null);
   const byId = new Map(clients.map((client) => [client.id, client]));
   const filteredBudgets = useMemo(() => budgets.filter((budget) => {
     const term = query.trim().toLocaleLowerCase("pt-BR");
     return (statusFilter === "Todos" || budget.status === statusFilter) && (!term || [budget.title, budget.description, budget.id, byId.get(budget.clientId)?.name].join(" ").toLocaleLowerCase("pt-BR").includes(term));
   }), [budgets, query, statusFilter, clients]);
-  const completionFor = (budget: Budget) => serviceCompletions.find((item) => item.budgetId === budget.id);
-  const nfseFor = (budget: Budget) => nfseRecords.find((item) => item.budgetId === budget.id);
+  const filteredOrders = useMemo(() => orders.filter((order) => {
+    const term = orderQuery.trim().toLocaleLowerCase("pt-BR");
+    const status = order.status ?? "Aberto";
+    return (orderStatusFilter === "Todos" || status === orderStatusFilter) && (!term || [order.subject, order.description, order.id, order.type, order.professional, order.workAddress, byId.get(order.clientId)?.name].join(" ").toLocaleLowerCase("pt-BR").includes(term));
+  }), [orders, orderQuery, orderStatusFilter, clients]);
   const budgetNumber = (budget: Budget) => budget.number || (budget.id.startsWith("dolibarr-budget-") ? String(budget.id.match(/(\d+)$/)?.[1] || "").slice(-2).padStart(2, "0") : String(budgets.filter((item) => !item.id.startsWith("dolibarr-budget-")).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).findIndex((item) => item.id === budget.id) + 1).padStart(2, "0"));
   const prepare = async (budget: Budget) => { try { const record = await props.onPrepareNfse(budget.id); setNotice(`DPS ${record.dpsSeries} nº ${record.dpsNumber} reservada para conferência. Transmissão permanece desabilitada.`); } catch (error) { setNotice(error instanceof Error ? error.message : "Não foi possível preparar a NFS-e."); } };
-  return <>
-<header className="border-b border-nexus-border pb-6">
-<p className="text-sm text-nexus-muted">Comercial</p>
-<h1 className="mt-1 text-3xl font-bold">Orçamentos e pedidos</h1>
-<div className="mt-5 grid max-w-2xl grid-cols-2 gap-4">
-<button className="rounded-xl bg-nexus-primary p-5 text-left text-white" onClick={props.onNewBudget}>
-<b className="block text-lg">Novo orçamento</b>
-<span className="text-sm">Itens, valores e custos estimados.</span>
-</button>
-<button className="rounded-xl border bg-white p-5 text-left" onClick={props.onNewOrder}>
-<b className="block text-lg">Novo pedido</b>
-<span className="text-sm text-nexus-muted">Ordem de serviço ou visita.</span>
-</button>
-</div>
-</header>
+  return <section>
+    <div className="grid grid-cols-2 gap-2 rounded-xl border border-nexus-border bg-white p-2">
+      <BudgetTabButton active={activeTab === "Orçamentos"} label="Orçamentos" onClick={() => setActiveTab("Orçamentos")} />
+      <BudgetTabButton active={activeTab === "Ordens de serviço"} label="Ordens de serviço" onClick={() => setActiveTab("Ordens de serviço")} />
+    </div>
+    <div className="mt-3 flex justify-end gap-3">
+      <button type="button" className="rounded-lg bg-nexus-primary px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-nexus-dark" onClick={props.onNewBudget}>+ Novo orçamento</button>
+      <button type="button" className="rounded-lg border border-nexus-border bg-white px-4 py-2 text-sm font-semibold text-nexus-ink hover:bg-slate-50" onClick={props.onNewOrder}>+ Novo pedido</button>
+    </div>
     {notice && <p className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">{notice}</p>}
-    <section className="mt-7 rounded-xl border bg-white">
-<div className="border-b px-5 py-4 font-semibold">Pedidos e ordens</div>{orders.length === 0 ? <p className="p-5 text-sm text-nexus-muted">Nenhum pedido cadastrado.</p> : orders.map((order) => { const client = byId.get(order.clientId); return <div className="flex items-center justify-between border-b px-5 py-4" key={order.id}>
-<div>
-<b>{order.subject}</b>
-<p className="text-sm text-nexus-muted">{order.type} · {client?.name} · {order.scheduledDate ? new Date(order.scheduledDate + "T12:00:00").toLocaleDateString("pt-BR") : "sem data"}</p>
-</div>
-<div className="flex gap-3 text-sm">
-<button onClick={() => client && props.onOrderPdf(order, client)}>Baixar PDF</button>
-<button className="font-semibold text-nexus-dark" onClick={() => props.onCreateBudgetFromOrder(order)}>Criar orçamento</button>
-</div>
-</div>; })}</section>
-    <section className="mt-6 rounded-xl border bg-white">
+    {activeTab === "Ordens de serviço" ? <section className="mt-6 overflow-hidden rounded-xl border bg-white">
+      <div className="flex items-center justify-between gap-4 border-b px-5 py-4"><h2 className="font-semibold">Ordens de serviço</h2><div className="flex items-center gap-2"><label className="text-sm font-semibold">Filtrar<select value={orderStatusFilter} onChange={(event) => setOrderStatusFilter(event.target.value as OrderStatusFilter)} className="ml-2 rounded-lg border bg-white px-3 py-2 text-sm font-normal"><option value="Todos">Todos</option>{orderStatuses.map((status) => <option key={status} value={status}>{status === "Não aprovado" ? "Recusadas" : status}</option>)}</select></label><label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm">⌕<input value={orderQuery} onChange={(event) => setOrderQuery(event.target.value)} className="w-44 outline-none" placeholder="Buscar ordem de serviço" /></label></div></div>
+      {filteredOrders.length === 0 ? <p className="p-5 text-sm text-nexus-muted">Nenhuma ordem de serviço encontrada.</p> : filteredOrders.map((order) => { const client = byId.get(order.clientId); const status = order.status ?? "Aberto"; return <div className="flex items-center justify-between gap-5 border-b px-5 py-4 last:border-b-0" key={order.id}>
+        <div className="min-w-0"><b className="block truncate">{order.subject}</b><p className="mt-1 text-sm text-nexus-muted">{client?.name || "Cliente não localizado"}</p><p className="mt-1 text-xs text-nexus-muted">{order.type}{order.scheduledDate ? ` · ${new Date(order.scheduledDate + "T12:00:00").toLocaleDateString("pt-BR")}` : ""}{order.scheduledTime ? ` às ${order.scheduledTime}` : ""}</p></div>
+        <div className="shrink-0 text-right"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${orderStatusTone[status]}`}>{status}</span><button className="mt-3 block text-sm font-semibold text-nexus-dark hover:text-nexus-primary" onClick={() => setOpenedOrder(order)}>Abrir</button></div>
+      </div>; })}
+    </section> : <section className="mt-6 overflow-hidden rounded-xl border bg-white">
 <div className="flex items-center justify-between gap-4 border-b px-5 py-4">
 <div>
 <h2 className="font-semibold">Orçamentos cadastrados</h2>
-<p className="mt-1 text-xs text-nexus-muted">O status comercial continua independente do estado fiscal.</p>
 </div>
 <div className="flex items-center gap-2">
 <label className="text-sm font-semibold">Filtrar<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className="ml-2 rounded-lg border bg-white px-3 py-2 text-sm font-normal">
@@ -75,28 +77,33 @@ export function BudgetsView(props: Props) {
 </label>
 </div>
 </div>
-      {filteredBudgets.length === 0 ? <p className="p-5 text-sm text-nexus-muted">Nenhum orçamento encontrado.</p> : filteredBudgets.map((budget) => { const client = byId.get(budget.clientId); const pricing = calculatePricing(budget.totalValue, settings, budget.pricingSnapshot); const completion = completionFor(budget); const nfse = nfseFor(budget); const statusClass = budget.status === "Faturado" ? "bg-blue-100 text-blue-800" : budget.status === "Aprovado" ? "bg-emerald-100 text-emerald-800" : budget.status === "Não aprovado" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"; return <div className="flex items-center justify-between gap-5 border-b px-5 py-4" key={budget.id}>
+      {filteredBudgets.length === 0 ? <p className="p-5 text-sm text-nexus-muted">Nenhum orçamento encontrado.</p> : filteredBudgets.map((budget) => { const client = byId.get(budget.clientId); const statusClass = budget.status === "Faturado" ? "bg-blue-100 text-blue-800" : budget.status === "Aprovado" ? "bg-emerald-100 text-emerald-800" : budget.status === "Não aprovado" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"; return <div className="flex items-center justify-between gap-5 border-b px-5 py-4 last:border-b-0" key={budget.id}>
 <div className="min-w-0">
-<p className="font-semibold text-nexus-ink">{client?.name || "Cliente não localizado"}</p>
-<b className="mt-1 block truncate">{budget.title}</b>
+<button type="button" className="block max-w-full truncate text-left font-semibold text-nexus-ink hover:text-nexus-primary" onClick={() => props.onOpenBudgetInFolder(budget)}>{budget.title}</button>
+<p className="mt-1 text-sm text-nexus-muted">{client?.name || "Cliente não localizado"}</p>
 <p className="mt-1 text-xs text-nexus-muted">Orçamento nº {budgetNumber(budget)}</p>
-<p className="mt-1 truncate text-sm text-nexus-muted">{budget.description || budget.workAddress || "Sem resumo informado"}</p>
-<p className="mt-2 text-xs text-nexus-muted">Fiscal: <b className="text-nexus-ink">{nfse?.status || "Não preparada"}</b>{completion ? ` · serviço confirmado em ${new Date(completion.completedOn + "T12:00:00").toLocaleDateString("pt-BR")}` : " · prestação ainda não confirmada"}</p>
 </div>
 <div className="shrink-0 text-right">
 <span className={"rounded-full px-2 py-1 text-xs font-semibold " + statusClass}>{budget.status}</span>
-<p className="mt-2 text-xs text-nexus-muted">Orçamento</p>
-<b className="text-xs text-nexus-muted">Nº {budgetNumber(budget)}</b>
-<p className="mt-1 font-semibold">{money.format(pricing.chargedValue)}</p>
-<div className="mt-2 flex justify-end gap-3 text-sm"><button className="font-semibold text-nexus-dark" onClick={() => props.onEditBudget(budget)}>Editar</button>{budget.status === "Aprovado" && !completion && <button className="font-semibold text-nexus-dark" onClick={() => setConfirming(budget)}>Confirmar serviço</button>}{budget.status === "Aprovado" && completion && !nfse && <button className="font-semibold text-nexus-primary" onClick={() => setIssuing(budget)}>Gerar Nota Fiscal</button>}{budget.status === "Aprovado" && <button className="font-semibold text-nexus-dark" onClick={() => props.onCreateWork(budget)}>Criar obra</button>}<button onClick={() => client && props.onPdf(budget, client)}>Baixar PDF</button>
-<button onClick={() => props.onOpenBudgetInFolder(budget)}>Pasta</button>
+<div className="mt-3 flex justify-end gap-3 text-sm"><button className="font-semibold text-nexus-dark hover:text-nexus-primary" onClick={() => setPreviewingBudget(budget)}>Ver prévia do PDF</button>
+<button className="font-semibold text-nexus-dark hover:text-nexus-primary" onClick={() => props.onOpenBudgetInFolder(budget)}>Abrir pasta</button>
 </div>
 </div>
 </div>; })}
-    </section>
+    </section>}
     {confirming && <ServiceConfirmation budget={confirming} works={works} orders={orders} onClose={() => setConfirming(null)} onSave={async (completion) => { try { await props.onConfirmService(completion); setConfirming(null); setNotice("Prestação de serviço confirmada e registrada em auditoria. A emissão continua pendente de conferência fiscal."); } catch (error) { setNotice(error instanceof Error ? error.message : "Não foi possível confirmar o serviço."); } }} />}
     {issuing && <NfseDraftDialog budget={issuing} client={byId.get(issuing.clientId)!} settings={fiscalSettings} draft={nfseDrafts.find((draft) => draft.budgetId === issuing.id)} onClose={() => setIssuing(null)} onSave={async (draft) => { await props.onSaveNfseDraft(issuing.id, draft); setNotice("Rascunho fiscal salvo. Revise as pendências antes de preparar a DPS localmente."); }} onPrepare={async () => { await prepare(issuing); setIssuing(null); }} />}
-  </>;
+    {previewingBudget && byId.get(previewingBudget.clientId) && <BudgetPdfPreview budget={previewingBudget} client={byId.get(previewingBudget.clientId)!} settings={settings} onClose={() => setPreviewingBudget(null)} />}
+    {openedOrder && byId.get(openedOrder.clientId) && <OrderDetailsDialog order={openedOrder} client={byId.get(openedOrder.clientId)!} onClose={() => setOpenedOrder(null)} onEdit={() => { props.onEditOrder(openedOrder); setOpenedOrder(null); }} onCreateBudget={() => { props.onCreateBudgetFromOrder(openedOrder); setOpenedOrder(null); }} onDownload={() => props.onOrderPdf(openedOrder, byId.get(openedOrder.clientId)!)} onDelete={async () => { if (!window.confirm("Excluir este pedido? Esta ação não poderá ser desfeita.")) return; try { await props.onDeleteOrder(openedOrder.id); setOpenedOrder(null); setNotice("Pedido excluído."); } catch (error) { setNotice(error instanceof Error ? error.message : "Não foi possível excluir o pedido."); } }} />}
+  </section>;
+}
+
+function BudgetTabButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) { return <button type="button" onClick={onClick} className={(active ? "bg-nexus-primary text-white" : "bg-slate-50 text-nexus-muted hover:bg-slate-100") + " rounded-lg px-3 py-2 text-sm font-semibold"}>{label}</button>; }
+
+function OrderDetailsDialog({ order, client, onClose, onEdit, onCreateBudget, onDownload, onDelete }: { order: Order; client: Client; onClose: () => void; onEdit: () => void; onCreateBudget: () => void; onDownload: () => void; onDelete: () => Promise<void> }) {
+  const [preview, setPreview] = useState(false);
+  const previewUrl = preview ? generateOrderPdf(order, client, false).output("datauristring") : "";
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-6"><section className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"><div className="flex items-start justify-between border-b pb-4"><div><p className="text-sm text-nexus-muted">{order.type}</p><h2 className="mt-1 text-2xl font-bold">{order.subject}</h2><p className="mt-1 text-sm text-nexus-muted">{client.name} · {order.scheduledDate ? new Date(order.scheduledDate + "T12:00:00").toLocaleDateString("pt-BR") : "Sem data"}{order.scheduledTime ? ` às ${order.scheduledTime}` : ""}</p></div><button onClick={onClose}>Fechar</button></div><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="space-y-4 text-sm"><div><b>Profissional responsável</b><p className="mt-1 text-nexus-muted">{order.professional}</p></div><div><b>Endereço</b><p className="mt-1 text-nexus-muted">{order.workAddress}</p></div><div><b>Descrição do pedido</b><p className="mt-1 whitespace-pre-wrap text-nexus-muted">{order.description}</p></div>{order.observations && <div><b>Observações</b><p className="mt-1 whitespace-pre-wrap text-nexus-muted">{order.observations}</p></div>}</div><div className="rounded-xl border bg-slate-50 p-4"><h3 className="font-semibold">Ações do pedido</h3><div className="mt-4 grid grid-cols-2 gap-3"><button className="rounded-lg bg-nexus-primary px-3 py-2 text-sm font-semibold text-white" onClick={onCreateBudget}>Criar orçamento</button><button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={() => setPreview((value) => !value)}>{preview ? "Ocultar prévia" : "Ver prévia"}</button><button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={onDownload}>Baixar PDF</button><button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={onEdit}>Editar pedido</button><button className="col-span-2 rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-700" onClick={() => void onDelete()}>Excluir pedido</button></div></div></div>{preview && <div className="mt-5 overflow-hidden rounded-xl border"><p className="border-b px-4 py-3 text-sm font-semibold">Prévia do documento</p><iframe title="Prévia do pedido" className="h-[62vh] w-full" src={previewUrl} /></div>}</section></div>;
 }
 
 function ServiceConfirmation({ budget, works, orders, onClose, onSave }: { budget: Budget; works: Work[]; orders: Order[]; onClose: () => void; onSave: (completion: ServiceCompletion) => Promise<void> }) {

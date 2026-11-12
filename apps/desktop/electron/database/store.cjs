@@ -2,9 +2,10 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
+const { evaluateLicenseState, publicLicenseState } = require("../licensing.cjs");
 
-const entities = ["clients", "budgets", "financial_sheets", "orders", "client_files", "works", "ledger_entries", "professionals", "work_days", "suppliers", "purchases", "documents"];
-const companyScopedTables = ["clients", "budgets", "budget_items", "budget_estimated_expenses", "financial_sheets", "financial_expenses", "works", "work_status_history", "work_daily_logs", "professionals", "work_days", "suppliers", "purchases", "documents", "ledger_entries", "ledger_payments", "orders", "client_files", "service_completions", "nfse_drafts", "dps_sequences", "nfse_records", "nfse_transmission_attempts", "nfse_artifacts", "nfse_events", "audit_log", "import_runs", "imported_sources", "financings"];
+const entities = ["clients", "budgets", "financial_sheets", "orders", "client_files", "works", "ledger_entries", "professionals", "work_days", "suppliers", "purchases", "documents", "products", "tools"];
+const companyScopedTables = ["clients", "budgets", "budget_items", "budget_estimated_expenses", "financial_sheets", "financial_expenses", "works", "work_status_history", "work_daily_logs", "professionals", "work_days", "suppliers", "purchases", "documents", "ledger_entries", "ledger_payments", "orders", "client_files", "service_completions", "nfse_drafts", "dps_sequences", "nfse_records", "nfse_transmission_attempts", "nfse_artifacts", "nfse_events", "audit_log", "import_runs", "imported_sources", "financings", "products"];
 const legacyCompanyId = "company-legacy-nexus";
 
 function now() { return new Date().toISOString(); }
@@ -59,10 +60,18 @@ class NexusStore {
       CREATE TABLE IF NOT EXISTS company_settings (company_id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));
       CREATE TABLE IF NOT EXISTS company_fiscal_settings (company_id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));
       CREATE TABLE IF NOT EXISTS company_certificate_references (id TEXT PRIMARY KEY, company_id TEXT NOT NULL, certificate_type TEXT NOT NULL, keychain_reference TEXT NOT NULL, certificate_cnpj TEXT, fingerprint TEXT, valid_until TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(company_id, fingerprint), FOREIGN KEY(company_id) REFERENCES companies(id));
-      CREATE TABLE IF NOT EXISTS financings (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, work_id TEXT NOT NULL, budget_id TEXT NOT NULL, first_payment_date TEXT NOT NULL, installments_count INTEGER NOT NULL, total_financed REAL NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, company_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS financings (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, work_id TEXT, budget_id TEXT NOT NULL, first_payment_date TEXT NOT NULL, installments_count INTEGER NOT NULL, total_financed REAL NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, company_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, company_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS app_users (id TEXT PRIMARY KEY, company_id TEXT NOT NULL, username TEXT NOT NULL COLLATE NOCASE UNIQUE, display_name TEXT NOT NULL, role TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));
+      CREATE TABLE IF NOT EXISTS company_licenses (company_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));
     `);
     this.migrateToMultiCompany();
     this.migrateFinancing();
+    this.migrateFinancingSources();
+    this.migrateProducts();
+    this.migrateTools();
+    this.migrateUserAccess();
+    this.migrateLicensing();
     this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-nfse-foundation-v1", now());
     this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-nfse-technical-v2", now());
   }
@@ -77,6 +86,72 @@ class NexusStore {
       this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_financings_insert BEFORE INSERT ON financings WHEN NEW.company_id IS NOT NULL AND NEW.company_id != (SELECT active_company_id FROM app_context WHERE id=1) BEGIN SELECT RAISE(ABORT, 'empresa ativa inválida'); END;");
       this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_financings_move BEFORE UPDATE OF company_id ON financings WHEN OLD.company_id IS NOT NULL AND NEW.company_id != OLD.company_id BEGIN SELECT RAISE(ABORT, 'movimentação entre empresas não permitida'); END;");
       this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-financing-v1", now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  migrateFinancingSources() {
+    if (this.db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get("2026-11-financing-sources-v1")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(financings)").all();
+      const workColumn = columns.find((column) => column.name === "work_id");
+      if (workColumn?.notnull) {
+        this.db.exec(`ALTER TABLE financings RENAME TO financings_legacy_sources;
+          CREATE TABLE financings (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, work_id TEXT, budget_id TEXT NOT NULL, first_payment_date TEXT NOT NULL, installments_count INTEGER NOT NULL, total_financed REAL NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, company_id TEXT NOT NULL);
+          INSERT INTO financings (id,client_id,work_id,budget_id,first_payment_date,installments_count,total_financed,data,created_at,updated_at,company_id)
+          SELECT id,client_id,work_id,budget_id,first_payment_date,installments_count,total_financed,data,created_at,updated_at,company_id FROM financings_legacy_sources;
+          DROP TABLE financings_legacy_sources;`);
+        this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_financings_insert BEFORE INSERT ON financings WHEN NEW.company_id IS NOT NULL AND NEW.company_id != (SELECT active_company_id FROM app_context WHERE id=1) BEGIN SELECT RAISE(ABORT, 'empresa ativa inválida'); END;");
+        this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_financings_move BEFORE UPDATE OF company_id ON financings WHEN OLD.company_id IS NOT NULL AND NEW.company_id != OLD.company_id BEGIN SELECT RAISE(ABORT, 'movimentação entre empresas não permitida'); END;");
+      }
+      this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-financing-sources-v1", now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  migrateProducts() {
+    if (this.db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get("2026-11-products-v1")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_products_insert BEFORE INSERT ON products WHEN NEW.company_id IS NOT NULL AND NEW.company_id != (SELECT active_company_id FROM app_context WHERE id=1) BEGIN SELECT RAISE(ABORT, 'empresa ativa inválida'); END;");
+      this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_products_move BEFORE UPDATE OF company_id ON products WHEN OLD.company_id IS NOT NULL AND NEW.company_id != OLD.company_id BEGIN SELECT RAISE(ABORT, 'movimentação entre empresas não permitida'); END;");
+      this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-products-v1", now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  migrateTools() {
+    if (this.db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get("2026-11-tools-v1")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec("CREATE TABLE IF NOT EXISTS tools (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, company_id TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));");
+      this.db.exec("CREATE INDEX IF NOT EXISTS tools_company_status_idx ON tools(company_id,status);");
+      this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_tools_insert BEFORE INSERT ON tools WHEN NEW.company_id != (SELECT active_company_id FROM app_context WHERE id=1) BEGIN SELECT RAISE(ABORT, 'empresa ativa inválida'); END;");
+      this.db.exec("CREATE TRIGGER IF NOT EXISTS company_guard_tools_move BEFORE UPDATE OF company_id ON tools WHEN NEW.company_id != OLD.company_id BEGIN SELECT RAISE(ABORT, 'movimentação entre empresas não permitida'); END;");
+      this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-tools-v1", now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  migrateUserAccess() {
+    if (this.db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get("2026-11-user-access-v1")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(app_users)").all();
+      if (!columns.some((column) => column.name === "permissions_json")) this.db.exec("ALTER TABLE app_users ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
+      this.db.prepare("UPDATE app_users SET permissions_json='[]' WHERE permissions_json IS NULL OR permissions_json='' ").run();
+      this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-user-access-v1", now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  migrateLicensing() {
+    if (this.db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get("2026-11-licensing-v1")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec("CREATE TABLE IF NOT EXISTS company_licenses (company_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(company_id) REFERENCES companies(id));");
+      this.db.prepare("INSERT INTO schema_migrations (version,applied_at) VALUES (?,?)").run("2026-11-licensing-v1", now());
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
@@ -131,8 +206,33 @@ class NexusStore {
   requireActiveCompany() { const id = this.activeCompanyId(); if (!id) throw new Error("Nenhuma empresa ativa. Cadastre ou selecione uma empresa antes de operar o ERP."); return id; }
   listCompanies() { return this.db.prepare("SELECT data FROM companies ORDER BY trade_name").all().map((row) => JSON.parse(row.data)); }
   activeCompany() { const id = this.activeCompanyId(); return id ? this.listCompanies().find((company) => company.id === id) || null : null; }
+  bootstrap() {
+    const companyId = this.activeCompanyId();
+    const settings = companyId ? this.db.prepare("SELECT data FROM company_settings WHERE company_id=?").get(companyId)?.data : null;
+    return { activeCompany: this.activeCompany(), settings: settings ? JSON.parse(settings) : null };
+  }
   createCompany(company) { const timestamp = now(); const legalName = String(company.legalName || "").trim(); const tradeName = String(company.tradeName || legalName).trim() || legalName; const stored = { id: company.id || crypto.randomUUID(), legalName, tradeName, createdAt: timestamp, updatedAt: timestamp }; if (!stored.legalName) throw new Error("Informe a razão social da empresa."); this.db.prepare("INSERT INTO companies (id,legal_name,trade_name,data,created_at,updated_at) VALUES (?,?,?,?,?,?)").run(stored.id, stored.legalName, stored.tradeName, JSON.stringify(stored), timestamp, timestamp); if (!this.activeCompanyId()) this.setActiveCompany(stored.id); return stored; }
   setActiveCompany(companyId) { if (!this.db.prepare("SELECT id FROM companies WHERE id=?").get(companyId)) throw new Error("Empresa não encontrada."); this.db.prepare("UPDATE app_context SET active_company_id=?,updated_at=? WHERE id=1").run(companyId, now()); return companyId; }
+
+  authStatus() { return { hasUsers: Boolean(this.db.prepare("SELECT 1 FROM app_users LIMIT 1").get()), activeCompany: this.activeCompany() }; }
+  normalizeUsername(value) { return String(value || "").trim().toLocaleLowerCase("pt-BR"); }
+  validateUsername(username) { const normalized = this.normalizeUsername(username); if (!/^[a-z0-9._-]{3,40}$/.test(normalized)) throw new Error("Use de 3 a 40 caracteres: letras, números, ponto, hífen ou sublinhado."); return normalized; }
+  validateCredentials(username, password) { const normalized = this.validateUsername(username); if (typeof password !== "string" || password.length < 8) throw new Error("A senha deve ter pelo menos 8 caracteres."); return normalized; }
+  validPermissions() { return ["dashboard.view", "clients.manage", "budgets.manage", "works.manage", "professionals.manage", "suppliers.manage", "products.manage", "tools.manage", "documents.manage", "finance.manage", "cashflow.manage", "financing.manage", "settings.manage"]; }
+  normalizePermissions(value) { const values = Array.isArray(value) ? value : []; const valid = new Set(this.validPermissions()); return [...new Set(values.map(String).filter((permission) => valid.has(permission)))]; }
+  publicUser(row) { let permissions = []; try { permissions = JSON.parse(row.permissions_json || "[]"); } catch { permissions = []; } return { id: row.id, companyId: row.company_id, username: row.username, displayName: row.display_name, role: row.role, permissions: row.role === "super_admin" ? ["*"] : this.normalizePermissions(permissions), active: Boolean(row.active) }; }
+  setupAdmin(input) {
+    if (this.authStatus().hasUsers) throw new Error("Já existe um usuário administrador configurado.");
+    const username = this.validateCredentials(input.username, input.password); const companyId = this.requireActiveCompany(); const timestamp = now(); const salt = crypto.randomBytes(16).toString("hex"); const hash = crypto.scryptSync(input.password, salt, 64).toString("hex"); const id = crypto.randomUUID(); const displayName = String(input.displayName || input.username).trim() || input.username;
+    this.db.prepare("INSERT INTO app_users (id,company_id,username,display_name,role,password_hash,password_salt,active,permissions_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, companyId, username, displayName, "super_admin", hash, salt, 1, '["*"]', timestamp, timestamp);
+    this.audit("created", "user", id, null, { username, role: "super_admin" }); return this.publicUser(this.db.prepare("SELECT * FROM app_users WHERE id=?").get(id));
+  }
+  authenticate(input) { const username = this.normalizeUsername(input.username); const row = this.db.prepare("SELECT * FROM app_users WHERE username=? AND active=1").get(username); if (!row) throw new Error("Usuário ou senha inválidos."); const attempted = crypto.scryptSync(String(input.password || ""), row.password_salt, 64); const stored = Buffer.from(row.password_hash, "hex"); if (attempted.length !== stored.length || !crypto.timingSafeEqual(attempted, stored)) throw new Error("Usuário ou senha inválidos."); this.setActiveCompany(row.company_id); return this.publicUser(row); }
+  updateCurrentUser(userId, input) { const row = this.db.prepare("SELECT * FROM app_users WHERE id=? AND active=1").get(userId); if (!row) throw new Error("Usuário não encontrado."); const username = input.username ? this.validateUsername(input.username) : row.username; const password = input.password ? String(input.password) : null; if (password && password.length < 8) throw new Error("A nova senha deve ter pelo menos 8 caracteres."); const salt = password ? crypto.randomBytes(16).toString("hex") : row.password_salt; const hash = password ? crypto.scryptSync(password, salt, 64).toString("hex") : row.password_hash; const displayName = String(input.displayName || row.display_name).trim() || row.display_name; this.db.prepare("UPDATE app_users SET username=?,display_name=?,password_hash=?,password_salt=?,updated_at=? WHERE id=?").run(username, displayName, hash, salt, now(), userId); const updated = this.db.prepare("SELECT * FROM app_users WHERE id=?").get(userId); this.audit("updated", "user", userId, { username: row.username }, { username, displayName }); return this.publicUser(updated); }
+  requireSuperAdmin(userId) { const user = this.db.prepare("SELECT * FROM app_users WHERE id=? AND active=1").get(userId); if (!user || user.company_id !== this.requireActiveCompany() || user.role !== "super_admin") throw new Error("Somente o administrador principal pode gerenciar usuários."); return user; }
+  listUsers(requesterId) { this.requireSuperAdmin(requesterId); const companyId = this.requireActiveCompany(); return this.db.prepare("SELECT * FROM app_users WHERE company_id=? ORDER BY display_name COLLATE NOCASE").all(companyId).map((row) => this.publicUser(row)); }
+  createUser(requesterId, input) { this.requireSuperAdmin(requesterId); const username = this.validateCredentials(input.username, input.password); const companyId = this.requireActiveCompany(); const role = ["admin", "financeiro", "operacional", "visualizador"].includes(input.role) ? input.role : "visualizador"; const timestamp = now(); const id = crypto.randomUUID(); const salt = crypto.randomBytes(16).toString("hex"); const hash = crypto.scryptSync(input.password, salt, 64).toString("hex"); const displayName = String(input.displayName || input.username).trim() || username; const permissions = this.normalizePermissions(input.permissions); this.db.prepare("INSERT INTO app_users (id,company_id,username,display_name,role,password_hash,password_salt,active,permissions_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, companyId, username, displayName, role, hash, salt, 1, JSON.stringify(permissions), timestamp, timestamp); const user = this.db.prepare("SELECT * FROM app_users WHERE id=?").get(id); this.audit("created", "user", id, null, { username, role, permissions }); return this.publicUser(user); }
+  updateUser(requesterId, userId, input) { const requester = this.requireSuperAdmin(requesterId); const companyId = this.requireActiveCompany(); const current = this.db.prepare("SELECT * FROM app_users WHERE id=? AND company_id=?").get(userId, companyId); if (!current) throw new Error("Usuário não encontrado nesta empresa."); if (current.role === "super_admin") throw new Error("A conta do administrador principal só pode ser alterada em Conta e acesso."); const username = input.username ? this.validateUsername(input.username) : current.username; const displayName = String(input.displayName || current.display_name).trim() || current.display_name; const role = ["admin", "financeiro", "operacional", "visualizador"].includes(input.role) ? input.role : current.role; const permissions = input.permissions ? this.normalizePermissions(input.permissions) : this.normalizePermissions(JSON.parse(current.permissions_json || "[]")); const active = typeof input.active === "boolean" ? Number(input.active) : current.active; const password = input.password ? String(input.password) : null; if (password && password.length < 8) throw new Error("A nova senha deve ter pelo menos 8 caracteres."); const salt = password ? crypto.randomBytes(16).toString("hex") : current.password_salt; const hash = password ? crypto.scryptSync(password, salt, 64).toString("hex") : current.password_hash; if (requester.id === userId && !active) throw new Error("O administrador atual não pode desativar a própria conta."); this.db.prepare("UPDATE app_users SET username=?,display_name=?,role=?,password_hash=?,password_salt=?,active=?,permissions_json=?,updated_at=? WHERE id=? AND company_id=?").run(username, displayName, role, hash, salt, active, JSON.stringify(permissions), now(), userId, companyId); const updated = this.db.prepare("SELECT * FROM app_users WHERE id=?").get(userId); this.audit("updated", "user", userId, { username: current.username, active: Boolean(current.active) }, { username, role, active: Boolean(active), permissions }); return this.publicUser(updated); }
 
   audit(action, entity, entityId, before, after, metadata) {
     const companyId = this.activeCompanyId();
@@ -141,12 +241,54 @@ class NexusStore {
 
   setMeta(key, value) { this.db.prepare("INSERT INTO app_meta (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at").run(key, value, now()); }
   getMeta(key) { return this.db.prepare("SELECT value FROM app_meta WHERE key=?").get(key)?.value ?? null; }
+  installationId() {
+    const existing = this.getMeta("installation_id_v1");
+    if (existing) return existing;
+    const installationId = crypto.randomUUID();
+    this.setMeta("installation_id_v1", installationId);
+    return installationId;
+  }
+  licenseRow(companyId) { return this.db.prepare("SELECT data FROM company_licenses WHERE company_id=?").get(companyId); }
+  ensureLicense(companyId = this.requireActiveCompany()) {
+    const existing = this.licenseRow(companyId);
+    if (existing) return JSON.parse(existing.data);
+    const startedAt = now();
+    const state = { type: "trial", installationId: this.installationId(), startedAt, expiresAt: new Date(Date.parse(startedAt) + 7 * 24 * 60 * 60 * 1000).toISOString(), lastCheckedAt: startedAt, planCode: "trial-7" };
+    this.db.prepare("INSERT INTO company_licenses (company_id,installation_id,data,created_at,updated_at) VALUES (?,?,?,?,?)").run(companyId, state.installationId, JSON.stringify(state), startedAt, startedAt);
+    this.audit("created", "license", companyId, null, publicLicenseState(state), { source: "local-trial" });
+    return state;
+  }
+  licenseStatus(companyId = this.activeCompanyId()) {
+    if (!companyId) return { state: "onboarding", active: true, message: "O período de teste começará após o cadastro da empresa." };
+    const state = this.ensureLicense(companyId);
+    const evaluation = evaluateLicenseState(state);
+    if (evaluation.nextState) {
+      this.db.prepare("UPDATE company_licenses SET data=?,updated_at=? WHERE company_id=?").run(JSON.stringify(evaluation.nextState), now(), companyId);
+    }
+    return publicLicenseState({ ...state, ...evaluation, ...(evaluation.nextState ? { lastCheckedAt: evaluation.nextState.lastCheckedAt } : {}) });
+  }
+  licenseActivationContext(companyId = this.requireActiveCompany()) {
+    const settings = this.db.prepare("SELECT data FROM company_settings WHERE company_id=?").get(companyId)?.data;
+    const company = this.db.prepare("SELECT legal_name,trade_name FROM companies WHERE id=?").get(companyId);
+    const parsed = settings ? JSON.parse(settings) : {};
+    return { companyId, installationId: this.ensureLicense(companyId).installationId, companyName: String(parsed.companyName || company?.trade_name || company?.legal_name || ""), companyDocument: String(parsed.cnpj || "").replace(/\D/g, "") };
+  }
+  applyLicenseActivation(companyId, activation) {
+    const current = this.ensureLicense(companyId);
+    const license = activation?.license;
+    if (!license || license.installationId !== current.installationId || license.status !== "active" || !license.expiresAt || !activation.token) throw new Error("A ativação retornada pelo serviço é inválida.");
+    const next = { type: "subscription", installationId: current.installationId, licenseId: String(license.licenseId), planCode: String(license.planCode || "subscription"), expiresAt: String(license.expiresAt), lastCheckedAt: now(), lastValidatedAt: now(), token: String(activation.token) };
+    const before = publicLicenseState(current);
+    this.db.prepare("UPDATE company_licenses SET data=?,updated_at=? WHERE company_id=?").run(JSON.stringify(next), now(), companyId);
+    this.audit("activated", "license", companyId, before, publicLicenseState(next), { licenseId: next.licenseId, planCode: next.planCode });
+    return this.licenseStatus(companyId);
+  }
 
   save(entity, record, source = null, sourceId = null, audit = true) {
     if (!entities.includes(entity)) throw new Error("Entidade inválida: " + entity);
     const companyId = this.requireActiveCompany();
     if (record.companyId && record.companyId !== companyId) throw new Error("A empresa informada não corresponde à empresa ativa.");
-    const anyExisting = this.db.prepare("SELECT company_id FROM " + ({ clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents" })[entity] + " WHERE id=?").get(record.id);
+    const anyExisting = this.db.prepare("SELECT company_id FROM " + ({ clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents", products: "products", tools: "tools" })[entity] + " WHERE id=?").get(record.id);
     if (anyExisting && anyExisting.company_id !== companyId) throw new Error("Acesso negado: o registro pertence a outra empresa.");
     const storedRecord = { ...record, companyId };
     const existing = this.getById(entity, record.id);
@@ -176,6 +318,31 @@ class NexusStore {
     if (entity === "professionals") this.db.prepare("INSERT INTO professionals (id,name,active,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,active=excluded.active,data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.name, record.active === false ? 0 : 1, json, record.createdAt || timestamp, timestamp, companyId);
     if (entity === "work_days") { if (!this.getById("professionals", record.professionalId) || !this.getById("works", record.workId)) throw new Error("Profissional ou obra inválido para a empresa ativa."); this.db.prepare("INSERT INTO work_days (id,professional_id,work_id,work_date,source_expense_id,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET professional_id=excluded.professional_id,work_id=excluded.work_id,work_date=excluded.work_date,source_expense_id=COALESCE(excluded.source_expense_id,work_days.source_expense_id),data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.professionalId, record.workId, record.date, record.sourceExpenseId || null, json, record.createdAt || timestamp, timestamp, companyId); }
     if (entity === "suppliers") this.db.prepare("INSERT INTO suppliers (id,name,active,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,active=excluded.active,data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.name, record.active === false ? 0 : 1, json, record.createdAt || timestamp, timestamp, companyId);
+    if (entity === "products") {
+      if (!String(record.name || "").trim()) throw new Error("Informe o nome do produto.");
+      const stockQuantity = Number(record.stockQuantity ?? 0);
+      const minimumStock = Number(record.minimumStock ?? 0);
+      if (!Number.isFinite(stockQuantity) || stockQuantity < 0 || !Number.isFinite(minimumStock) || minimumStock < 0) throw new Error("Quantidade em estoque e estoque mínimo devem ser valores válidos.");
+      const movements = Array.isArray(record.stockHistory) ? record.stockHistory : [];
+      movements.forEach((movement) => {
+        if (!movement?.id || !movement?.type || !Number.isFinite(Number(movement.quantity))) throw new Error("Movimentação de estoque inválida.");
+        if (movement.clientId && !this.getById("clients", movement.clientId)) throw new Error("Cliente da movimentação de estoque inválido para a empresa ativa.");
+        if (movement.workId && !this.getById("works", movement.workId)) throw new Error("Obra da movimentação de estoque inválida para a empresa ativa.");
+        if (movement.budgetId && !this.getById("budgets", movement.budgetId)) throw new Error("Orçamento da movimentação de estoque inválido para a empresa ativa.");
+      });
+      this.db.prepare("INSERT INTO products (id,name,category,active,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,active=excluded.active,data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.name.trim(), record.category, record.active === false ? 0 : 1, json, record.createdAt || timestamp, timestamp, companyId);
+    }
+    if (entity === "tools") {
+      const statuses = ["No depósito", "Em uso", "Extraviada", "Danificada", "Em manutenção"];
+      if (!String(record.name || "").trim()) throw new Error("Informe o nome da ferramenta.");
+      if (!statuses.includes(record.status)) throw new Error("Situação da ferramenta inválida.");
+      const assignment = record.assignment || null;
+      if (record.status === "Em uso") {
+        if (!assignment?.expectedReturnDate || !(String(assignment.professionalName || "").trim() || assignment.professionalId)) throw new Error("Informe o responsável e a previsão de devolução para registrar a ferramenta em uso.");
+        if ((assignment.professionalId && !this.getById("professionals", assignment.professionalId)) || (assignment.workId && !this.getById("works", assignment.workId))) throw new Error("Profissional ou obra inválido para a empresa ativa.");
+      }
+      this.db.prepare("INSERT INTO tools (id,name,status,active,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,status=excluded.status,active=excluded.active,data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.name.trim(), record.status, record.active === false ? 0 : 1, json, record.createdAt || timestamp, timestamp, companyId);
+    }
     if (entity === "purchases") { if (!this.getById("suppliers", record.supplierId) || (record.workId && !this.getById("works", record.workId))) throw new Error("Fornecedor ou obra inválido para a empresa ativa."); this.db.prepare("INSERT INTO purchases (id,supplier_id,work_id,purchase_date,total_amount,source_expense_id,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET supplier_id=excluded.supplier_id,work_id=excluded.work_id,purchase_date=excluded.purchase_date,total_amount=excluded.total_amount,source_expense_id=COALESCE(excluded.source_expense_id,purchases.source_expense_id),data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.supplierId, record.workId || null, record.date, Number(record.totalAmount) || 0, record.sourceExpenseId || null, json, record.createdAt || timestamp, timestamp, companyId); }
     if (entity === "documents") { if (!this.getById("clients", record.clientId) || (record.budgetId && !this.getById("budgets", record.budgetId)) || (record.workId && !this.getById("works", record.workId))) throw new Error("Vínculo de documento inválido para a empresa ativa."); this.db.prepare("INSERT INTO documents (id,client_id,budget_id,work_id,document_type,signature_status,version,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET client_id=excluded.client_id,budget_id=excluded.budget_id,work_id=excluded.work_id,document_type=excluded.document_type,signature_status=excluded.signature_status,version=excluded.version,data=excluded.data,updated_at=excluded.updated_at").run(record.id, record.clientId, record.budgetId || null, record.workId || null, record.type, record.signatureStatus, record.version, json, record.createdAt || timestamp, timestamp, companyId); }
     if (entity === "ledger_entries") {
@@ -191,18 +358,28 @@ class NexusStore {
   }
 
   getById(entity, id) {
-    const tables = { clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents" };
+    const tables = { clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents", products: "products", tools: "tools" };
     if (!tables[entity]) throw new Error("Entidade inválida: " + entity);
     const row = this.db.prepare("SELECT data FROM " + tables[entity] + " WHERE id=? AND company_id=?").get(id, this.requireActiveCompany());
     return row ? JSON.parse(row.data) : null;
   }
 
   delete(entity, id) {
-    const tables = { clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents" };
+    const tables = { clients: "clients", budgets: "budgets", financial_sheets: "financial_sheets", orders: "orders", client_files: "client_files", works: "works", ledger_entries: "ledger_entries", professionals: "professionals", work_days: "work_days", suppliers: "suppliers", purchases: "purchases", documents: "documents", products: "products", tools: "tools" };
     const existing = this.getById(entity, id);
     if (!existing) throw new Error("Registro não encontrado ou pertence a outra empresa.");
     this.db.prepare("DELETE FROM " + tables[entity] + " WHERE id=? AND company_id=?").run(id, this.requireActiveCompany());
     this.audit("deleted", entity, id, existing, null);
+  }
+
+  deleteOrder(orderId) {
+    const companyId = this.requireActiveCompany();
+    const order = this.getById("orders", orderId);
+    if (!order) throw new Error("Pedido não encontrado ou pertence a outra empresa.");
+    const linkedBudget = this.db.prepare("SELECT 1 FROM budgets WHERE company_id=? AND json_extract(data, '$.sourceOrderId')=? LIMIT 1").get(companyId, orderId);
+    if (linkedBudget) throw new Error("Este pedido já possui um orçamento vinculado e não pode ser excluído.");
+    this.db.prepare("DELETE FROM orders WHERE id=? AND company_id=?").run(orderId, companyId);
+    this.audit("deleted", "orders", orderId, order, null);
   }
 
   deleteBudget(budgetId) {
@@ -315,10 +492,15 @@ class NexusStore {
   saveFinancing(financing) {
     const companyId = this.requireActiveCompany();
     const client = this.getById("clients", financing.clientId);
-    const work = this.getById("works", financing.workId);
     const budget = this.getById("budgets", financing.budgetId);
-    if (!client || !work || !budget) throw new Error("Cliente, obra ou orçamento não pertence à empresa ativa.");
-    if (work.clientId !== client.id || work.budgetId !== budget.id || budget.clientId !== client.id) throw new Error("A obra selecionada não pertence ao cliente e orçamento informados.");
+    const work = financing.workId ? this.getById("works", financing.workId) : null;
+    if (!client || !budget || (financing.workId && !work)) throw new Error("Cliente, obra ou orçamento não pertence à empresa ativa.");
+    if (budget.clientId !== client.id || (work && work.clientId !== client.id)) throw new Error("A origem selecionada não pertence ao cliente informado.");
+    const workIds = [...new Set((Array.isArray(financing.workIds) ? financing.workIds : financing.workId ? [financing.workId] : []).filter(Boolean))];
+    const budgetIds = [...new Set((Array.isArray(financing.budgetIds) ? financing.budgetIds : [financing.budgetId]).filter(Boolean))];
+    if (!budgetIds.length) throw new Error("Selecione pelo menos um orçamento para o financiamento.");
+    for (const workId of workIds) { const sourceWork = this.getById("works", workId); if (!sourceWork || sourceWork.clientId !== client.id) throw new Error("Uma das obras selecionadas não pertence ao cliente informado."); }
+    for (const budgetId of budgetIds) { const sourceBudget = this.getById("budgets", budgetId); if (!sourceBudget || sourceBudget.clientId !== client.id) throw new Error("Um dos orçamentos selecionados não pertence ao cliente informado."); }
     const count = Math.trunc(Number(financing.installmentsCount));
     if (!Number.isInteger(count) || count < 1 || count > 120) throw new Error("Informe entre 1 e 120 parcelas.");
     if (!financing.firstPaymentDate || !Array.isArray(financing.installments) || financing.installments.length !== count) throw new Error("A tabela de parcelas está incompleta.");
@@ -333,8 +515,8 @@ class NexusStore {
     const existingRow = this.db.prepare("SELECT data,company_id FROM financings WHERE id=?").get(financing.id);
     if (existingRow && existingRow.company_id !== companyId) throw new Error("Acesso negado: o financiamento pertence a outra empresa.");
     const timestamp = now(); const existing = existingRow ? JSON.parse(existingRow.data) : null;
-    const stored = { ...financing, companyId, createdAt: existing?.createdAt || financing.createdAt || timestamp, updatedAt: timestamp };
-    this.db.prepare("INSERT INTO financings (id,client_id,work_id,budget_id,first_payment_date,installments_count,total_financed,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET client_id=excluded.client_id,work_id=excluded.work_id,budget_id=excluded.budget_id,first_payment_date=excluded.first_payment_date,installments_count=excluded.installments_count,total_financed=excluded.total_financed,data=excluded.data,updated_at=excluded.updated_at").run(stored.id, stored.clientId, stored.workId, stored.budgetId, stored.firstPaymentDate, count, Number(stored.totalFinanced), JSON.stringify(stored), stored.createdAt, timestamp, companyId);
+    const stored = { ...financing, workId: financing.workId || "", budgetId: financing.budgetId || budgetIds[0], workIds, budgetIds, companyId, createdAt: existing?.createdAt || financing.createdAt || timestamp, updatedAt: timestamp };
+    this.db.prepare("INSERT INTO financings (id,client_id,work_id,budget_id,first_payment_date,installments_count,total_financed,data,created_at,updated_at,company_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET client_id=excluded.client_id,work_id=excluded.work_id,budget_id=excluded.budget_id,first_payment_date=excluded.first_payment_date,installments_count=excluded.installments_count,total_financed=excluded.total_financed,data=excluded.data,updated_at=excluded.updated_at").run(stored.id, stored.clientId, stored.workId || null, stored.budgetId, stored.firstPaymentDate, count, Number(stored.totalFinanced), JSON.stringify(stored), stored.createdAt, timestamp, companyId);
     this.audit(existing ? "updated" : "created", "financing", stored.id, existing, stored, { budgetId: stored.budgetId, workId: stored.workId });
     return stored;
   }
@@ -476,7 +658,7 @@ class NexusStore {
     const companyId = this.activeCompanyId();
     const rows = (table) => companyId ? this.db.prepare("SELECT data FROM " + table + " WHERE company_id=?").all(companyId).map((row) => JSON.parse(row.data)) : [];
     const setting = (table) => companyId ? this.db.prepare("SELECT data FROM " + table + " WHERE company_id=?").get(companyId)?.data : null;
-    return { activeCompany: this.activeCompany(), companies: this.listCompanies(), clients: rows("clients").sort((a,b) => a.name.localeCompare(b.name)), budgets: rows("budgets").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), financialSheets: rows("financial_sheets"), orders: rows("orders"), clientFiles: rows("client_files").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), works: rows("works").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), financings: rows("financings").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), ledgerEntries: rows("ledger_entries").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), professionals: rows("professionals").sort((a,b) => a.name.localeCompare(b.name)), workDays: rows("work_days").sort((a,b) => b.date.localeCompare(a.date)), suppliers: rows("suppliers").sort((a,b) => b.name.localeCompare(a.name)), purchases: rows("purchases").sort((a,b) => b.date.localeCompare(a.date)), documents: rows("documents").sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)), serviceCompletions: rows("service_completions"), nfseDrafts: rows("nfse_drafts"), nfseRecords: rows("nfse_records").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), nfseAttempts: rows("nfse_transmission_attempts").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), certificateReferences: rows("company_certificate_references").map((reference) => ({ ...reference, keychainReference: "[armazenado no cofre do sistema]" })), fiscalSettings: setting("company_fiscal_settings") ? JSON.parse(setting("company_fiscal_settings")) : null, settings: setting("company_settings") ? JSON.parse(setting("company_settings")) : null };
+    return { activeCompany: this.activeCompany(), companies: this.listCompanies(), clients: rows("clients").sort((a,b) => a.name.localeCompare(b.name)), budgets: rows("budgets").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), financialSheets: rows("financial_sheets"), orders: rows("orders"), clientFiles: rows("client_files").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), works: rows("works").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), financings: rows("financings").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), ledgerEntries: rows("ledger_entries").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), professionals: rows("professionals").sort((a,b) => a.name.localeCompare(b.name)), workDays: rows("work_days").sort((a,b) => b.date.localeCompare(a.date)), suppliers: rows("suppliers").sort((a,b) => b.name.localeCompare(a.name)), purchases: rows("purchases").sort((a,b) => b.date.localeCompare(a.date)), products: rows("products").sort((a,b) => a.name.localeCompare(b.name)), tools: rows("tools").sort((a,b) => a.name.localeCompare(b.name)), documents: rows("documents").sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)), serviceCompletions: rows("service_completions"), nfseDrafts: rows("nfse_drafts"), nfseRecords: rows("nfse_records").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), nfseAttempts: rows("nfse_transmission_attempts").sort((a,b) => b.createdAt.localeCompare(a.createdAt)), certificateReferences: rows("company_certificate_references").map((reference) => ({ ...reference, keychainReference: "[armazenado no cofre do sistema]" })), fiscalSettings: setting("company_fiscal_settings") ? JSON.parse(setting("company_fiscal_settings")) : null, settings: setting("company_settings") ? JSON.parse(setting("company_settings")) : null };
   }
 
   async backup(payload) {

@@ -35,3 +35,10 @@ Estas instruções se aplicam a toda alteração neste repositório.
 ## Entrega
 
 Ao concluir uma tarefa, informe: pedido, implementação, arquivos criados/modificados, impacto em funcionalidades existentes, testes executados, pendências e recomendações relevantes.
+
+## Publicação de atualizações do aplicativo
+
+- Toda versão nova distribuída aos usuários deve publicar os instaladores **e** os manifestos de atualização compatíveis, gerados pela mesma compilação.
+- Para o canal Alpha, publique `alpha-linux.yml` junto aos arquivos Linux. Quando houver pacotes para Windows e macOS, publique também os manifestos correspondentes do canal (`alpha.yml` e `alpha-mac.yml`).
+- Antes de anunciar ou encerrar uma publicação, valide que cada manifesto aponta para os arquivos enviados, com versão, tamanho e checksum compatíveis.
+- Esta é a regra padrão. Só omita um manifesto se o usuário solicitar expressamente que ele não seja publicado.

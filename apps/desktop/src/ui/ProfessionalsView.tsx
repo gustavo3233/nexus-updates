@@ -133,10 +133,7 @@ export function ProfessionalsView({ professionals, workDays, works, clients, onS
   };
 
   return <>
-    <header className="flex items-start justify-between border-b border-nexus-border pb-6">
-      <div><p className="text-sm text-nexus-muted">Gestão de equipe</p><h1 className="mt-1 text-3xl font-bold text-nexus-ink">Profissionais e diárias</h1><p className="mt-2 text-sm text-nexus-muted">Cada diária entra automaticamente como gasto de funcionário na planilha financeira da obra.</p></div>
-      <div className="flex gap-2"><button className="rounded-lg border border-nexus-border bg-white px-4 py-3 text-sm font-semibold" onClick={() => { setError(""); setDaily(true); }}>+ Lançar diária</button><button className="rounded-lg bg-nexus-primary px-4 py-3 text-sm font-semibold text-white" onClick={() => setCreating(true)}>+ Novo profissional</button></div>
-    </header>
+    <div className="flex justify-end gap-2"><button className="rounded-lg border border-nexus-border bg-white px-4 py-2 text-sm font-semibold" onClick={() => { setError(""); setDaily(true); }}>+ Lançar diária</button><button className="rounded-lg bg-nexus-primary px-4 py-2 text-sm font-semibold text-white" onClick={() => setCreating(true)}>+ Novo profissional</button></div>
     <section className="mt-6 grid grid-cols-3 gap-4"><Card label="Profissionais ativos" value={String(active.length)} /><Card label="Diárias registradas" value={String(workDays.length)} /><Card label="Custo de mão de obra" value={money.format(total)} /></section>
     <section className="mt-6 overflow-hidden rounded-xl border border-nexus-border bg-white">
       <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_105px_115px_115px] gap-3 border-b bg-slate-50 px-5 py-3 text-xs font-semibold uppercase text-nexus-muted"><span>Profissional</span><span>Função / especialidade</span><span>Diária</span><span>Situação</span><span className="text-right">Ações</span></div>

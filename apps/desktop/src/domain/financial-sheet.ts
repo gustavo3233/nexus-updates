@@ -3,6 +3,7 @@ export type ExpenseCategory = "funcionario" | "materiais" | "ferramenta" | "logi
 export type FinancialExpense = {
   id: string;
   sourceId?: string;
+  professionalId?: string;
   date: string;
   category: ExpenseCategory;
   description: string;
@@ -13,6 +14,10 @@ export type FinancialSheet = {
   id: string;
   clientId: string;
   budgetId: string;
+  workId?: string;
+  title?: string;
+  status?: "Aberta" | "Finalizada" | "Cancelada";
+  finalizedAt?: string;
   createdAt: string;
   updatedAt: string;
   expenses: FinancialExpense[];

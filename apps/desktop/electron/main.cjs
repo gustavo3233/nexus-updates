@@ -5,11 +5,41 @@ const crypto = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const { NexusStore } = require("./database/store.cjs");
+const { NexusUpdater } = require("./updater.cjs");
+const { NexusLicenseClient } = require("./license-client.cjs");
 const { createHomologationDiagnostics } = require("./fiscal/nfse-diagnostics.cjs");
+const { permissionForEntity, requirePermission } = require("./authorization.cjs");
 // A versão empacotada de teste mantém sua própria pasta de dados, sem tocar no banco do desenvolvimento.
 if (app.isPackaged) app.setName("Nexus Teste");
 const execFileAsync = promisify(execFile);
 let store;
+let loggedUser = null;
+let updater;
+let licenseClient;
+
+function requireAuthenticatedSession() {
+  if (!loggedUser?.active) throw new Error("Entre no sistema antes de realizar esta operação.");
+  const user = loggedUser;
+  if (store.requireActiveCompany() !== user.companyId) throw new Error("Acesso negado: a empresa ativa não pertence ao usuário autenticado.");
+  return user;
+}
+
+function requireLicensedSession() {
+  const user = requireAuthenticatedSession();
+  const license = store.licenseStatus(user.companyId);
+  if (!license.active) throw new Error(license.message);
+  return user;
+}
+
+function requireSession(permission) {
+  return requirePermission(requireLicensedSession(), permission);
+}
+
+function requireSuperAdminSession() {
+  const user = requireSession("settings.manage");
+  if (user.role !== "super_admin") throw new Error("Somente o administrador principal pode realizar esta operação.");
+  return user;
+}
 
 function safePathSegment(value) {
   return String(value).replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -142,20 +172,50 @@ function createWindow() {
 app.whenReady().then(() => {
   store = new NexusStore(app.getPath("userData"));
   store.open();
-  ipcMain.handle("nexus:database-snapshot", () => store.snapshot());
+  licenseClient = new NexusLicenseClient({ packaged: app.isPackaged });
+  updater = new NexusUpdater();
+  updater.configure();
+  ipcMain.handle("nexus:auth-status", () => ({ ...store.authStatus(), user: loggedUser, license: store.licenseStatus() }));
+  ipcMain.handle("nexus:auth-setup-admin", (_event, details) => {
+    const user = store.setupAdmin(details);
+    const license = store.licenseStatus(user.companyId);
+    // Criar o primeiro administrador não pode ser uma forma de contornar uma
+    // licença expirada. A ativação continua disponível na tela de entrada.
+    if (!license.active) throw new Error(license.message);
+    loggedUser = user;
+    return user;
+  });
+  ipcMain.handle("nexus:auth-login", (_event, details) => { const user = store.authenticate(details); const license = store.licenseStatus(user.companyId); if (!license.active) throw new Error(license.message); loggedUser = user; return user; });
+  ipcMain.handle("nexus:auth-logout", () => { loggedUser = null; return true; });
+  ipcMain.handle("nexus:auth-update-account", (_event, details) => { if (!loggedUser) throw new Error("Entre no sistema antes de alterar a conta."); const user = store.updateCurrentUser(loggedUser.id, details); loggedUser = user; return user; });
+  ipcMain.handle("nexus:auth-users-list", () => { const user = requireSuperAdminSession(); return store.listUsers(user.id); });
+  ipcMain.handle("nexus:auth-users-create", (_event, details) => { const user = requireSuperAdminSession(); return store.createUser(user.id, details); });
+  ipcMain.handle("nexus:auth-users-update", (_event, userId, details) => { const user = requireSuperAdminSession(); return store.updateUser(user.id, userId, details); });
+  ipcMain.handle("nexus:app-bootstrap", () => store.bootstrap());
+  ipcMain.handle("nexus:license-status", () => store.licenseStatus());
+  ipcMain.handle("nexus:license-activate", async (_event, key) => {
+    const context = store.licenseActivationContext();
+    const activation = await licenseClient.activate({ key, installationId: context.installationId, companyName: context.companyName, companyDocument: context.companyDocument });
+    return store.applyLicenseActivation(context.companyId, activation);
+  });
+  ipcMain.handle("nexus:database-snapshot", () => { requireLicensedSession(); return store.snapshot(); });
   ipcMain.handle("nexus:companies-list", () => store.listCompanies());
-  ipcMain.handle("nexus:companies-create", (_event, company) => store.createCompany(company));
-  ipcMain.handle("nexus:companies-select", (_event, companyId) => { store.setActiveCompany(companyId); return store.snapshot(); });
-  ipcMain.handle("nexus:database-save", (_event, entity, record) => store.save(entity, record));
-  ipcMain.handle("nexus:database-save-financing", (_event, financing) => store.saveFinancing(financing));
-  ipcMain.handle("nexus:database-delete-financing", (_event, financingId) => store.deleteFinancing(financingId));
-  ipcMain.handle("nexus:database-delete-budget", (_event, budgetId) => store.deleteBudget(budgetId));
-  ipcMain.handle("nexus:database-save-work-day", (_event, day) => store.saveWorkDayAndExpense(day));
-  ipcMain.handle("nexus:database-save-purchase", (_event, purchase) => store.savePurchaseAndExpense(purchase));
-  ipcMain.handle("nexus:database-save-settings", (_event, settings) => { store.saveSettings(settings); return settings; });
-  ipcMain.handle("nexus:fiscal-save-settings", (_event, settings) => store.saveFiscalSettings(settings));
-  ipcMain.handle("nexus:fiscal-save-draft", (_event, budgetId, draft) => store.saveNfseDraft(budgetId, draft));
+  ipcMain.handle("nexus:companies-create", (_event, company) => { requireSuperAdminSession(); return store.createCompany(company); });
+  ipcMain.handle("nexus:companies-select", (_event, companyId) => { const user = requireAuthenticatedSession(); if (companyId !== user.companyId) throw new Error("Acesso negado: não é possível selecionar outra empresa."); store.setActiveCompany(companyId); return store.snapshot(); });
+  ipcMain.handle("nexus:database-save", (_event, entity, record) => { requireSession(permissionForEntity(entity)); return store.save(entity, record); });
+  ipcMain.handle("nexus:database-delete-ledger-entry", (_event, entryId) => { requireSession("cashflow.manage"); store.delete("ledger_entries", entryId); return true; });
+  ipcMain.handle("nexus:database-delete-financial-sheet", (_event, sheetId) => { requireSession("finance.manage"); store.delete("financial_sheets", sheetId); return true; });
+  ipcMain.handle("nexus:database-save-financing", (_event, financing) => { requireSession("financing.manage"); return store.saveFinancing(financing); });
+  ipcMain.handle("nexus:database-delete-financing", (_event, financingId) => { requireSession("financing.manage"); return store.deleteFinancing(financingId); });
+  ipcMain.handle("nexus:database-delete-budget", (_event, budgetId) => { requireSession("budgets.manage"); return store.deleteBudget(budgetId); });
+  ipcMain.handle("nexus:database-delete-order", (_event, orderId) => { requireSession("budgets.manage"); store.deleteOrder(orderId); return true; });
+  ipcMain.handle("nexus:database-save-work-day", (_event, day) => { requireSession("professionals.manage"); return store.saveWorkDayAndExpense(day); });
+  ipcMain.handle("nexus:database-save-purchase", (_event, purchase) => { requireSession("suppliers.manage"); return store.savePurchaseAndExpense(purchase); });
+  ipcMain.handle("nexus:database-save-settings", (_event, settings) => { requireSession("settings.manage"); store.saveSettings(settings); return settings; });
+  ipcMain.handle("nexus:fiscal-save-settings", (_event, settings) => { requireSession("settings.manage"); return store.saveFiscalSettings(settings); });
+  ipcMain.handle("nexus:fiscal-save-draft", (_event, budgetId, draft) => { requireSession("budgets.manage"); return store.saveNfseDraft(budgetId, draft); });
   ipcMain.handle("nexus:fiscal-import-a1", async (_event, details) => {
+    requireSession("settings.manage");
     if (!safeStorage.isEncryptionAvailable()) throw new Error("O cofre seguro do sistema operacional não está disponível. O certificado não será importado.");
     const result = await dialog.showOpenDialog({ title: "Selecionar certificado A1", properties: ["openFile"], filters: [{ name: "Certificado A1", extensions: ["pfx", "p12"] }] });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -169,14 +229,18 @@ app.whenReady().then(() => {
     const saved = store.registerCertificateReference({ certificateType: "A1", keychainReference, certificateCnpj: String(details?.certificateCnpj || ""), fingerprint, validUntil: details?.validUntil || null });
     return saved;
   });
-  ipcMain.handle("nexus:fiscal-confirm-service", (_event, completion) => store.confirmServiceCompletion(completion));
-  ipcMain.handle("nexus:fiscal-prepare-nfse", (_event, budgetId) => store.prepareNfse(budgetId));
+  ipcMain.handle("nexus:fiscal-confirm-service", (_event, completion) => { requireSession("works.manage"); return store.confirmServiceCompletion(completion); });
+  ipcMain.handle("nexus:fiscal-prepare-nfse", (_event, budgetId) => { requireSession("budgets.manage"); return store.prepareNfse(budgetId); });
   ipcMain.handle("nexus:fiscal-homologation-diagnostics", () => {
     const snapshot = store.snapshot();
     const xsdRoot = path.join(app.getPath("userData"), "nfse", "xsd", "NFSe-ESQUEMAS_XSD-PRODREST-v1.01-20261020");
     return createHomologationDiagnostics({ fiscalSettings: snapshot.fiscalSettings, certificateReferences: snapshot.certificateReferences, xsdPackagePath: path.join(xsdRoot, "package.zip") });
   });
   ipcMain.handle("nexus:database-status", () => ({ databasePath: store.dbPath, legacyMigration: store.getMeta("legacy_localstorage_migration_v1"), backup: store.getMeta("legacy_localstorage_backup_v1") }));
+  ipcMain.handle("nexus:update-status", () => updater.status());
+  ipcMain.handle("nexus:update-check", async () => updater.check());
+  ipcMain.handle("nexus:update-download", async () => updater.download());
+  ipcMain.handle("nexus:update-install", () => updater.install());
   ipcMain.handle("nexus:open-whatsapp-web", async (_event, phone) => {
     const digits = String(phone || "").replace(/\D/g, "");
     const normalized = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
@@ -202,9 +266,11 @@ app.whenReady().then(() => {
     return true;
   });
   ipcMain.handle("nexus:import-dolibarr", async () => {
+    requireSession("settings.manage");
     try { return await syncDolibarrToStore(); } catch (error) { console.error("Dolibarr import failed:", error); throw error; }
   });
   ipcMain.handle("nexus:select-and-save-document", async (_event, clientId) => {
+    requireSession("documents.manage");
     if (!store.getById("clients", clientId)) throw new Error("Cliente não encontrado na empresa ativa.");
     const result = await dialog.showOpenDialog({
       title: "Salvar arquivo na pasta do cliente",
@@ -225,6 +291,7 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  if (app.isPackaged) setTimeout(() => { updater.check().catch(() => {}); }, 12_000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

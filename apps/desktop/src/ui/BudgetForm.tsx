@@ -5,25 +5,32 @@ import type { Order } from "../domain/order";
 import type { Settings } from "../domain/settings";
 import type { Professional } from "../domain/professional";
 import type { Purchase } from "../domain/supplier";
+import type { Product } from "../domain/product";
 import { expenseCategoryLabels, type ExpenseCategory } from "../domain/financial-sheet";
 import { ClientForm } from "./ClientForm";
 import { BudgetPdfPreview } from "./BudgetPdfPreview";
 import { calculatePricing } from "../services/pricing";
+import { BudgetApprovalDialog, type ApprovalPaymentPlan } from "./BudgetApprovalDialog";
 
-type Props = { clients: Client[]; professionals: Professional[]; purchases: Purchase[]; settings: Settings; initialClientId?: string; initialOrder?: Order; initialBudget?: Budget; onCancel: () => void; onSave: (budget: Budget) => void; onClientCreated: (client: Client) => void; onClientUpdated: (client: Client) => void };
+type Props = { clients: Client[]; professionals: Professional[]; purchases: Purchase[]; products: Product[]; settings: Settings; initialClientId?: string; initialOrder?: Order; initialBudget?: Budget; initialDraft?: BudgetDraft; onCancel: () => void; onSave: (budget: Budget) => void; onApproveBudget: (budget: Budget, plan: ApprovalPaymentPlan) => void; onClientCreated: (client: Client) => void; onClientUpdated: (client: Client) => void };
 const input = "mt-1 w-full rounded-lg border border-nexus-border px-3 py-2 text-sm";
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const addressesFor = (client?: Client): ClientAddress[] => !client ? [] : client.addresses?.length ? client.addresses : client.address ? [{ id: `principal-${client.id}`, label: "Endereço principal", address: client.address }] : [];
 
-export function BudgetForm({ clients, professionals, purchases, settings, initialClientId = "", initialOrder, initialBudget, onCancel, onSave, onClientCreated, onClientUpdated }: Props) {
-  const [draft, setDraft] = useState<BudgetDraft>(initialBudget ? { ...initialBudget } : { ...emptyBudgetDraft(), clientId: initialOrder?.clientId || initialClientId, sourceOrderId: initialOrder?.id, title: initialOrder?.subject || "", description: initialOrder?.description || "", workAddress: initialOrder?.workAddress || "" });
-  const [error, setError] = useState(""); const [newClient, setNewClient] = useState(false); const [addingAddress, setAddingAddress] = useState(false); const [addressLabel, setAddressLabel] = useState("Casa"); const [addressText, setAddressText] = useState(""); const [confirmWithoutEstimate, setConfirmWithoutEstimate] = useState(false); const [preview, setPreview] = useState(false);
+export function BudgetForm({ clients, professionals, purchases, products, settings, initialClientId = "", initialOrder, initialBudget, initialDraft, onCancel, onSave, onApproveBudget, onClientCreated, onClientUpdated }: Props) {
+  const [draft, setDraft] = useState<BudgetDraft>(initialBudget ? { ...initialBudget } : initialDraft ? { ...initialDraft, items: initialDraft.items.map((item) => ({ ...item })) } : { ...emptyBudgetDraft(), clientId: initialOrder?.clientId || initialClientId, sourceOrderId: initialOrder?.id, title: initialOrder?.subject || "", description: initialOrder?.description || "", workAddress: initialOrder?.workAddress || "" });
+  const [error, setError] = useState(""); const [newClient, setNewClient] = useState(false); const [addingAddress, setAddingAddress] = useState(false); const [addressLabel, setAddressLabel] = useState("Casa"); const [addressText, setAddressText] = useState(""); const [confirmWithoutEstimate, setConfirmWithoutEstimate] = useState(false); const [preview, setPreview] = useState(false); const [pendingApproval, setPendingApproval] = useState<Budget | null>(null);
   const selectedClient = useMemo(() => clients.find((client) => client.id === draft.clientId), [clients, draft.clientId]);
   const activeProfessionals = useMemo(() => professionals.filter((professional) => professional.active !== false).sort((first, second) => first.name.localeCompare(second.name)), [professionals]);
   const materialSuggestions = useMemo(() => Array.from(new Set(purchases.flatMap((purchase) => purchase.items.map((item) => item.description.trim())).filter(Boolean))).sort((first, second) => first.localeCompare(second)), [purchases]);
   const savedAddresses = addressesFor(selectedClient);
   const set = <K extends keyof BudgetDraft>(key: K, value: BudgetDraft[K]) => setDraft((old) => ({ ...old, [key]: value }));
   const setItem = (index: number, key: keyof BudgetItem, value: string | number) => set("items", draft.items.map((item, i) => i === index ? { ...item, [key]: value } : item));
+  const activeProducts = products.filter((product) => product.active !== false);
+  const selectProduct = (index: number, name: string) => {
+    const product = activeProducts.find((item) => item.name.toLocaleLowerCase("pt-BR") === name.trim().toLocaleLowerCase("pt-BR"));
+    set("items", draft.items.map((item, itemIndex) => itemIndex === index ? product ? { ...item, kind: "product", productId: product.id, description: product.name, unit: product.unit, unitPrice: product.unitPrice } : { ...item, kind: "product", productId: undefined, description: name } : item));
+  };
   const setEstimate = (index: number, change: Partial<EstimatedExpense>) => set("estimatedExpenses", draft.estimatedExpenses.map((item, i) => {
     if (i !== index) return item;
     const next = { ...item, ...change };
@@ -42,16 +49,17 @@ export function BudgetForm({ clients, professionals, purchases, settings, initia
     setEstimate(index, professional ? { professionalId, description: professional.name, quantity: draft.estimatedExpenses[index].quantity || 1, unit: "dia", unitPrice: professional.dailyRate } : { professionalId: undefined });
   };
   const saveAddress = () => { if (!selectedClient || !addressLabel.trim() || !addressText.trim()) return; const address: ClientAddress = { id: crypto.randomUUID(), label: addressLabel.trim(), address: addressText.trim() }; onClientUpdated({ ...selectedClient, address: selectedClient.address || address.address, addresses: [...addressesFor(selectedClient), address] }); set("workAddress", address.address); setAddressText(""); setAddingAddress(false); };
-  const saveBudget = () => { const complete = { ...draft, totalValue: total }; onSave({ ...complete, id: initialBudget?.id ?? crypto.randomUUID(), createdAt: initialBudget?.createdAt ?? new Date().toISOString() }); };
+  const completedBudget = (): Budget => ({ ...draft, totalValue: total, id: initialBudget?.id ?? crypto.randomUUID(), createdAt: initialBudget?.createdAt ?? new Date().toISOString() });
+  const finishBudget = () => { const budget = completedBudget(); if (budget.status === "Aprovado" && initialBudget?.status !== "Aprovado") setPendingApproval(budget); else onSave(budget); };
   const previewBudget: Budget = { ...draft, totalValue: total, id: initialBudget?.id ?? "previa", createdAt: initialBudget?.createdAt ?? new Date().toISOString() };
-  const submit = (event: FormEvent) => { event.preventDefault(); const complete = { ...draft, totalValue: total }; const message = validateBudget(complete); if (message) return setError(message); if (!draft.estimatedExpenses.some((expense) => expense.amount > 0)) return setConfirmWithoutEstimate(true); saveBudget(); };
+  const submit = (event: FormEvent) => { event.preventDefault(); const complete = { ...draft, totalValue: total }; const message = validateBudget(complete); if (message) return setError(message); if (!draft.estimatedExpenses.some((expense) => expense.amount > 0)) return setConfirmWithoutEstimate(true); finishBudget(); };
   return <>
 <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 p-8">
 <form className="max-h-full w-full max-w-5xl overflow-auto rounded-2xl bg-white p-6 shadow-xl" onSubmit={submit}>
     <div className="flex justify-between border-b pb-4">
 <div>
-<h2 className="text-xl font-bold">Novo orçamento</h2>
-<p className="text-sm text-nexus-muted">{initialOrder ? `Criado a partir do pedido: ${initialOrder.subject}` : "Vincule o orçamento ao cliente."}</p>
+<h2 className="text-xl font-bold">{initialBudget ? "Editar orçamento" : "Novo orçamento"}</h2>
+<p className="text-sm text-nexus-muted">{initialOrder ? `Criado a partir do pedido: ${initialOrder.subject}` : initialDraft ? "Criado a partir de itens selecionados de outro orçamento. Revise e complemente os dados antes de salvar." : "Vincule o orçamento ao cliente."}</p>
 </div>
 <button type="button" onClick={onCancel}>Cancelar</button>
 </div>
@@ -96,15 +104,17 @@ export function BudgetForm({ clients, professionals, purchases, settings, initia
 <h3 className="font-semibold">Itens do orçamento</h3>
 <button type="button" onClick={() => set("items", [...draft.items, emptyBudgetItem()])}>+ Adicionar item</button>
 </div>
-<div className="mb-1 grid grid-cols-[minmax(0,1fr)_90px_170px_140px_82px_28px] gap-2 px-1 text-xs font-semibold text-nexus-muted">
-<span>Descrição</span>
+<div className="mb-1 grid grid-cols-[100px_minmax(0,1fr)_90px_150px_130px_82px_28px] gap-2 px-1 text-xs font-semibold text-nexus-muted">
+<span>Tipo</span>
+<span>Serviço ou produto</span>
 <span>Quantidade</span>
 <span>Unidade de medida</span>
 <span>Valor unitário</span>
 <span>Cortesia</span>
 <span />
-</div>{draft.items.map((item, index) => <div className="mb-2 grid grid-cols-[minmax(0,1fr)_90px_170px_140px_82px_28px] items-center gap-2" key={item.id}>
-<input className="rounded border px-2 py-2 text-sm" placeholder="Descrição do item" value={item.description} onChange={(event) => setItem(index, "description", event.target.value)} />
+</div>{draft.items.map((item, index) => <div className="mb-2 grid grid-cols-[100px_minmax(0,1fr)_90px_150px_130px_82px_28px] items-center gap-2" key={item.id}>
+<select className="rounded border px-2 py-2 text-sm" aria-label="Tipo do item" value={item.kind || "service"} onChange={(event) => set("items", draft.items.map((current, itemIndex) => itemIndex === index ? { ...current, kind: event.target.value as "service" | "product", productId: undefined, description: "" } : current))}><option value="service">Serviço</option><option value="product">Produto</option></select>
+{(item.kind || "service") === "product" ? <input list="produtos-cadastrados" className="rounded border px-2 py-2 text-sm" placeholder="Buscar produto cadastrado" value={item.description} onChange={(event) => selectProduct(index, event.target.value)} /> : <input className="rounded border px-2 py-2 text-sm" placeholder="Descreva o serviço" value={item.description} onChange={(event) => setItem(index, "description", event.target.value)} />}
 <input className="rounded border px-2 py-2 text-sm" type="number" min="0.01" step="0.01" placeholder="Qtd." aria-label="Quantidade" value={item.quantity || ""} onChange={(event) => setItem(index, "quantity", Number(event.target.value))} />
 <select className="rounded border px-2 py-2 text-sm" aria-label="Unidade de medida" value={item.unit} onChange={(event) => setItem(index, "unit", event.target.value)}>{budgetUnitOptions.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}</select>
 <div className="relative">
@@ -113,7 +123,7 @@ export function BudgetForm({ clients, professionals, purchases, settings, initia
 </div>
 <label className="flex items-center gap-1 text-xs font-medium text-nexus-primary"><input type="checkbox" checked={Boolean(item.isCourtesy)} onChange={(event) => set("items", draft.items.map((current, itemIndex) => itemIndex === index ? { ...current, isCourtesy: event.target.checked, unitPrice: event.target.checked ? 0 : current.unitPrice } : current))} />Cortesia</label>
 <button type="button" className="text-nexus-error" title="Remover item" onClick={() => set("items", draft.items.filter((_, itemIndex) => itemIndex !== index))}>×</button>
-</div>)}<p className="text-right font-bold">Base dos itens: {money.format(total)}</p>
+</div>)}<datalist id="produtos-cadastrados">{activeProducts.map((product) => <option key={product.id} value={product.name}>{product.category} · {money.format(product.unitPrice)}</option>)}</datalist><p className="text-right font-bold">Base dos itens: {money.format(total)}</p>
 </section>
     <section className="mt-4 flex flex-wrap items-center gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
       <p className="mr-2 text-sm font-semibold">Impostos e lucro deste orçamento</p>
@@ -171,5 +181,5 @@ export function BudgetForm({ clients, professionals, purchases, settings, initia
 <button className="rounded-lg bg-nexus-primary px-4 py-2 text-white">Salvar orçamento</button>
 </div>
   </form>
-</div>{newClient ? <ClientForm onCancel={() => setNewClient(false)} onSave={(client) => { onClientCreated(client); set("clientId", client.id); set("workAddress", addressesFor(client)[0]?.address || ""); setNewClient(false); }} /> : null}{confirmWithoutEstimate ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6"><section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"><h2 className="text-xl font-bold text-nexus-ink">Salvar sem gastos estimados?</h2><p className="mt-3 text-sm text-nexus-muted">Você ainda não lançou estimativas de materiais, funcionários ou outros custos. Estimar os gastos ajuda a conferir a margem antes de enviar o orçamento.</p><div className="mt-6 flex justify-end gap-3"><button className="rounded-lg border px-4 py-2 text-sm font-semibold" type="button" onClick={() => setConfirmWithoutEstimate(false)}>Voltar e estimar</button><button className="rounded-lg bg-nexus-primary px-4 py-2 text-sm font-semibold text-white" type="button" onClick={saveBudget}>Salvar mesmo assim</button></div></section></div> : null}{preview && selectedClient ? <BudgetPdfPreview budget={previewBudget} client={selectedClient} settings={settings} onClose={() => setPreview(false)} /> : null}</>;
+</div>{newClient ? <ClientForm onCancel={() => setNewClient(false)} onSave={(client) => { onClientCreated(client); set("clientId", client.id); set("workAddress", addressesFor(client)[0]?.address || ""); setNewClient(false); }} /> : null}{confirmWithoutEstimate ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6"><section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"><h2 className="text-xl font-bold text-nexus-ink">Salvar sem gastos estimados?</h2><p className="mt-3 text-sm text-nexus-muted">Você ainda não lançou estimativas de materiais, funcionários ou outros custos. Estimar os gastos ajuda a conferir a margem antes de enviar o orçamento.</p><div className="mt-6 flex justify-end gap-3"><button className="rounded-lg border px-4 py-2 text-sm font-semibold" type="button" onClick={() => setConfirmWithoutEstimate(false)}>Voltar e estimar</button><button className="rounded-lg bg-nexus-primary px-4 py-2 text-sm font-semibold text-white" type="button" onClick={finishBudget}>Salvar mesmo assim</button></div></section></div> : null}{pendingApproval ? <BudgetApprovalDialog title={pendingApproval.title} amount={calculatePricing(pendingApproval.totalValue, settings, pendingApproval.pricingSnapshot).chargedValue} onCancel={() => setPendingApproval(null)} onConfirm={(plan) => { onApproveBudget(pendingApproval, plan); setPendingApproval(null); }} /> : null}{preview && selectedClient ? <BudgetPdfPreview budget={previewBudget} client={selectedClient} settings={settings} onClose={() => setPreview(false)} /> : null}</>;
 }

@@ -1,7 +1,7 @@
 {
   "name": "@nexus/desktop",
   "private": true,
-  "version": "0.2.0-alpha.3",
+  "version": "0.2.0-alpha.8",
   "description": "Versão de teste do ERP Nexus Construção e Reformas.",
   "author": {
     "name": "Nexus Construção e Reformas",
@@ -14,10 +14,15 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
     "test:database": "node --test electron/database/store.test.cjs",
-    "dist:test": "pnpm run build && electron-builder --linux AppImage deb --x64"
+    "dist:test": "pnpm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "dist:linux": "pnpm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "dist:win": "pnpm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "pnpm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "release:alpha": "pnpm run build && electron-builder --linux AppImage deb --x64 --publish always"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.1.2",
+    "electron-updater": "^6.8.11",
     "jspdf": "^4.2.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
@@ -50,6 +55,15 @@
       "package.json"
     ],
     "artifactName": "Nexus-Teste-${version}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "gustavo3233",
+        "repo": "nexus-updates",
+        "channel": "alpha",
+        "releaseType": "prerelease"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage",
@@ -58,6 +72,18 @@
       "category": "Office",
       "synopsis": "ERP Nexus — versão de teste",
       "maintainer": "Nexus Construção e Reformas"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.business"
     }
   }
 }

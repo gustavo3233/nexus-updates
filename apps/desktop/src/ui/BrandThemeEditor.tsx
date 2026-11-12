@@ -1,0 +1,26 @@
+import { defaultSettings, type Settings } from "../domain/settings";
+import { extractBrandColors } from "../services/brand-colors";
+
+type Props = { settings: Settings; onChange: (settings: Settings) => void };
+const validColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
+
+export function BrandThemeEditor({ settings, onChange }: Props) {
+  const mode = settings.brandColorMode ?? "custom";
+  // Qualquer edição manual precisa reativar o tema. Sem isso, após voltar ao
+  // padrão a prévia mudava, mas o aplicativo mantinha as cores padrão ao salvar.
+  const change = <K extends keyof Settings>(key: K, value: Settings[K]) => onChange({ ...settings, [key]: value, customThemeEnabled: true, brandColorMode: "custom" });
+  const palette = settings.brandColors.slice(0, 6); const manual = mode === "custom";
+  const useLogoColors = async () => {
+    const source = settings.appLogoDataUrl || settings.pdfLogoDataUrl || settings.logoDataUrl;
+    if (!source) return window.alert("Escolha um logo antes de ler as cores.");
+    const colors = await extractBrandColors(source);
+    if (!colors.length) return window.alert("Não foi possível identificar cores suficientes neste logo.");
+    onChange({ ...settings, customThemeEnabled: true, brandColorMode: "logo", brandColors: colors, themeButtonColor: colors[0], themeSidebarColor: colors[1] ?? colors[0], themeTextColor: colors[2] ?? colors[1] ?? colors[0] });
+  };
+  const setPalette = (index: number, color: string) => { if (!manual) return; const next = [...palette]; next[index] = color; change("brandColors", next.filter(validColor)); };
+  const restoreDefault = () => {
+    onChange({ ...settings, customThemeEnabled: false, brandColorMode: "custom", brandColors: [...defaultSettings.brandColors], themeButtonColor: defaultSettings.themeButtonColor, themeSidebarColor: defaultSettings.themeSidebarColor, themeTextColor: defaultSettings.themeTextColor });
+  };
+  const field = (key: "themeButtonColor" | "themeSidebarColor" | "themeTextColor", label: string, help: string) => <label className={(manual ? "" : "opacity-45") + " rounded-lg border p-3 text-sm"}><b>{label}</b><span className="mt-1 block text-xs text-nexus-muted">{help}</span><div className="mt-3 flex items-center gap-2"><input type="color" disabled={!manual} value={settings[key]} onChange={(event) => change(key, event.target.value)} className="h-9 w-11 cursor-pointer rounded border p-1 disabled:cursor-not-allowed"/><input disabled={!manual} value={settings[key]} onChange={(event) => validColor(event.target.value) && change(key, event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-2 text-xs uppercase disabled:cursor-not-allowed"/></div></label>;
+  return <section className="rounded-xl border p-4"><div className="flex items-center justify-between gap-3"><div><b className="text-sm">Origem das cores</b><p className="mt-1 text-xs text-nexus-muted">Escolha extrair do logo ou montar sua própria paleta.</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-nexus-muted">{manual ? "PERSONALIZAR" : "CORES DO LOGO"}</span></div><div className="mt-4 grid grid-cols-3 gap-2"><button type="button" onClick={() => void useLogoColors()} className={(manual ? "border" : "border-nexus-primary bg-orange-50 text-nexus-primary") + " rounded-lg px-3 py-2 text-xs font-semibold"}>Ler cores do logo</button><button type="button" onClick={() => onChange({ ...settings, customThemeEnabled: true, brandColorMode: "custom" })} className={(!manual ? "border" : "border-nexus-primary bg-orange-50 text-nexus-primary") + " rounded-lg px-3 py-2 text-xs font-semibold"}>Personalizar</button><button type="button" onClick={restoreDefault} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Voltar ao padrão</button></div><p className="mt-2 text-xs text-nexus-muted">Restaura as cores originais do Nexus usadas na primeira abertura do sistema.</p><div className={(manual ? "" : "pointer-events-none opacity-45") + " mt-4 rounded-xl border p-3"}><b className="text-sm">Paleta da marca</b><p className="mt-1 text-xs text-nexus-muted">No modo logo, a paleta e as aplicações abaixo são definidas automaticamente.</p><div className="mt-4 flex flex-wrap gap-3">{palette.map((color, index) => <label className="group relative" key={`${color}-${index}`} title={color}><input type="color" disabled={!manual} value={color} onChange={(event) => setPalette(index, event.target.value)} className="h-11 w-11 cursor-pointer rounded-full border-2 border-white p-0 shadow disabled:cursor-not-allowed"/><span className="mt-1 block text-center text-[10px] text-nexus-muted">{color}</span></label>)}{palette.length < 6 && <button type="button" disabled={!manual} onClick={() => change("brandColors", [...palette, "#64748B"])} className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-dashed text-xl text-nexus-muted disabled:cursor-not-allowed">+</button>}</div></div><div className="mt-4 grid grid-cols-3 gap-3">{field("themeButtonColor", "Botões e destaque", "Ações principais e seleção.")}{field("themeSidebarColor", "Fundo do menu", "Lateral onde fica o logo.")}{field("themeTextColor", "Texto principal", "Títulos e informações principais.")}</div></section>;
+}

@@ -3,6 +3,10 @@ packages:
   - packages/*
   - services/*
 allowBuilds:
-  core-js: set this to true or false
+  # Vite requires esbuild's verified platform binary during the desktop build.
+  esbuild: true
+  # Necessários para a criação dos instaladores distribuídos pelo GitHub Actions.
+  core-js: true
+  electron-winstaller: true
 minimumReleaseAgeExclude:
   - electron@45.2.1

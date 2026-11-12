@@ -8,6 +8,20 @@
   background: #f5f7fa;
 }
 
+/* O assistente já informa a etapa e o título no cabeçalho; evita repetições no conteúdo. */
+.setup-step-content > div > p:first-child,
+.setup-step-content > div > h2:nth-child(2) {
+  display: none;
+}
+
+/* Tema por empresa: valores aplicados somente quando o usuário ativa a personalização. */
+.theme-custom .bg-nexus-primary { background-color: var(--nexus-brand-primary) !important; }
+.theme-custom .text-nexus-primary, .theme-custom .text-nexus-dark { color: var(--nexus-brand-primary) !important; }
+.theme-custom .border-nexus-primary { border-color: var(--nexus-brand-primary) !important; }
+.theme-custom .bg-nexus-ink { background-color: var(--nexus-brand-sidebar) !important; }
+.theme-custom .text-nexus-ink { color: var(--nexus-brand-text) !important; }
+.theme-custom button.bg-nexus-primary:hover { filter: brightness(.9); }
+
 body {
   margin: 0;
   min-width: 1024px;

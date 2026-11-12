@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-type IconName = "dashboard" | "clients" | "budgets" | "works" | "professionals" | "suppliers" | "documents" | "finance" | "cashflow" | "financing" | "settings";
+type IconName = "dashboard" | "clients" | "budgets" | "works" | "professionals" | "suppliers" | "products" | "tools" | "documents" | "finance" | "cashflow" | "financing" | "settings";
 
 export function SystemIcon({ name, className = "" }: { name: IconName; className?: string }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
@@ -10,6 +10,8 @@ export function SystemIcon({ name, className = "" }: { name: IconName; className
     works: <><path d="M3 20h18M5 20V9l7-5 7 5v11M9 20v-6h6v6"/></>,
     professionals: <><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.3"/><path d="M3 21c.6-4 2.6-6 6-6s5.4 2 6 6M15 16c3 .1 4.8 1.8 5.5 5"/></>,
     suppliers: <><path d="M3 7h11v10H3zM14 11h4l3 3v3h-7z"/><circle cx="7" cy="19" r="2"/><circle cx="18" cy="19" r="2"/></>,
+    products: <><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></>,
+    tools: <><path d="m14 6 4-4 4 4-4 4"/><path d="m16 4-7.5 7.5"/><path d="m9 10-6 6 5 5 6-6"/><path d="m3 16 5 5"/></>,
     documents: <><path d="M5 3h10l4 4v14H5z"/><path d="M15 3v5h5M8 12h8M8 16h8"/></>,
     finance: <><circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.7-1.5-3-1.5-1.7 0-3 1-3 2.5 0 3.5 6 1.5 6 5 0 1.4-1.3 2.5-3 2.5-1.4 0-2.6-.5-3.2-1.6M12 6v12"/></>,
     cashflow: <><path d="M4 18l5-5 4 3 7-8"/><path d="M16 8h4v4M4 4v16h16"/></>,

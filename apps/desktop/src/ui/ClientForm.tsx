@@ -5,6 +5,7 @@ import { emptyClientDraft, type Client, type ClientAddress, type ClientDraft, ty
 type ClientFormProps = {
   onCancel: () => void;
   onSave: (client: Client) => void;
+  initialClient?: Client;
 };
 
 type FieldProps = {
@@ -22,8 +23,8 @@ function Field({ label, value, placeholder, onChange, type = "text", multiline =
   return <label className="block text-sm font-medium text-nexus-ink">{label}{multiline ? <textarea className={`${className} min-h-24 resize-y`} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /> : <input className={className} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} type={type} />}</label>;
 }
 
-export function ClientForm({ onCancel, onSave }: ClientFormProps) {
-  const [draft, setDraft] = useState<ClientDraft>(emptyClientDraft);
+export function ClientForm({ onCancel, onSave, initialClient }: ClientFormProps) {
+  const [draft, setDraft] = useState<ClientDraft>(initialClient ? { ...initialClient } : emptyClientDraft);
   const [error, setError] = useState<string | null>(null);
 
   function updateDraft<Field extends keyof ClientDraft>(field: Field, value: ClientDraft[Field]) {
@@ -41,15 +42,15 @@ export function ClientForm({ onCancel, onSave }: ClientFormProps) {
       ...(primaryAddress ? [{ id: crypto.randomUUID(), label: "Endereço principal", address: primaryAddress }] : []),
       ...extraAddresses.filter((item) => item.address !== primaryAddress)
     ];
-    onSave({ ...draft, address: primaryAddress || addresses[0]?.address || "", addresses, id: crypto.randomUUID(), createdAt: new Date().toISOString() });
+    onSave({ ...draft, address: primaryAddress || addresses[0]?.address || "", addresses, id: initialClient?.id ?? crypto.randomUUID(), createdAt: initialClient?.createdAt ?? new Date().toISOString() });
   }
 
   function updateAddress(index: number, field: keyof ClientAddress, value: string) {
     updateDraft("addresses", (draft.addresses ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
   }
 
-  return <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/40 p-8"><form className="max-h-full w-full max-w-2xl overflow-auto rounded-2xl bg-white p-6 shadow-xl" onSubmit={submit}>
-    <div className="flex items-start justify-between border-b border-nexus-border pb-4"><div><h2 className="text-xl font-bold text-nexus-ink">Novo cliente</h2><p className="mt-1 text-sm text-nexus-muted">Os campos com asterisco são obrigatórios.</p></div><button className="text-sm font-semibold text-nexus-muted hover:text-nexus-ink" type="button" onClick={onCancel}>Cancelar</button></div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-8"><form className="max-h-full w-full max-w-2xl overflow-auto rounded-2xl bg-white p-6 shadow-xl" onSubmit={submit}>
+    <div className="flex items-start justify-between border-b border-nexus-border pb-4"><div><h2 className="text-xl font-bold text-nexus-ink">{initialClient ? "Dados avançados do cliente" : "Novo cliente"}</h2><p className="mt-1 text-sm text-nexus-muted">Os campos com asterisco são obrigatórios.</p></div><button className="text-sm font-semibold text-nexus-muted hover:text-nexus-ink" type="button" onClick={onCancel}>Cancelar</button></div>
     <div className="mt-5 grid grid-cols-2 gap-4">
       <label className="block text-sm font-medium text-nexus-ink">Tipo de cliente<select className="mt-1 w-full rounded-lg border border-nexus-border bg-white px-3 py-2.5 text-sm outline-none focus:border-nexus-primary focus:ring-2 focus:ring-orange-100" value={draft.type} onChange={(event) => updateDraft("type", event.target.value as ClientType)}><option value="PF">Pessoa física</option><option value="PJ">Pessoa jurídica</option></select></label>
       <Field label="Nome ou razão social *" value={draft.name} onChange={(value) => updateDraft("name", value)} placeholder="Digite o nome" />
@@ -64,6 +65,6 @@ export function ClientForm({ onCancel, onSave }: ClientFormProps) {
       <div className="col-span-2"><Field label="Observações" value={draft.notes} onChange={(value) => updateDraft("notes", value)} placeholder="Informações importantes do cliente" multiline /></div>
     </div>
     {error ? <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-nexus-error">{error}</p> : null}
-    <div className="mt-6 flex justify-end gap-3"><button className="rounded-lg border border-nexus-border px-4 py-2.5 text-sm font-semibold text-nexus-ink" type="button" onClick={onCancel}>Cancelar</button><button className="rounded-lg bg-nexus-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-nexus-dark" type="submit">Salvar cliente</button></div>
+    <div className="mt-6 flex justify-end gap-3"><button className="rounded-lg border border-nexus-border px-4 py-2.5 text-sm font-semibold text-nexus-ink" type="button" onClick={onCancel}>Cancelar</button><button className="rounded-lg bg-nexus-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-nexus-dark" type="submit">{initialClient ? "Salvar alterações" : "Salvar cliente"}</button></div>
   </form></div>;
 }

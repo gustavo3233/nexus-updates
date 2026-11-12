@@ -4,13 +4,21 @@ export type FinancingInstallment = {
   amount: number;
   paidAt?: string;
   fiscalDraftRequestedAt?: string;
+  /** Observação interna específica da parcela. */
+  note?: string;
 };
 
 export type Financing = {
   id: string;
   clientId: string;
+  /** Nome livre do financiamento, útil quando ele reúne mais de uma obra. */
+  name?: string;
+  /** Referências principais preservadas para financiamentos antigos e integrações. */
   workId: string;
   budgetId: string;
+  /** Todas as origens incluídas na proposta de financiamento. */
+  workIds?: string[];
+  budgetIds?: string[];
   principalAmount: number;
   /** Valor recebido na contratação, antes do parcelamento. */
   downPaymentAmount?: number;

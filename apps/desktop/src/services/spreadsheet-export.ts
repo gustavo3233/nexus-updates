@@ -37,7 +37,7 @@ function infoLine(pdf: jsPDF, label: string, value: string, x: number, y: number
   pdf.setFont("helvetica", "bold"); pdf.setFontSize(8); pdf.text(label, x, y); pdf.setFont("helvetica", "normal"); pdf.text(value || "Não informado", x + 30, y);
 }
 
-export function exportWorkSpreadsheet(client: Client, budget: Budget, sheet: FinancialSheet | undefined, settings: Settings) {
+export function generateWorkSpreadsheetPdf(client: Client, budget: Budget, sheet: FinancialSheet | undefined, settings: Settings, download = true) {
   const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
   const expenses = sheet?.expenses ?? []; const total = expenses.reduce((sum, item) => sum + item.amount, 0); const pricing = calculatePricing(budget.totalValue, settings, budget.pricingSnapshot);
   header(pdf, "Relatório da obra", settings);
@@ -47,7 +47,12 @@ export function exportWorkSpreadsheet(client: Client, budget: Budget, sheet: Fin
   let y = tableHeader(pdf, columns, widths, 53);
   y = addExpenseRows(pdf, expenses.map((expense) => ({ expense })), columns, widths, y, settings);
   pdf.setFillColor(23, 32, 51); pdf.rect(10, y + 3, 277, 9, "F"); pdf.setTextColor(255, 255, 255); pdf.setFont("helvetica", "bold"); pdf.setFontSize(9); pdf.text("Total de gastos reais: " + money.format(total), 190, y + 9); pdf.setTextColor(23, 32, 51);
-  pdf.save("relatorio-obra-" + safeFilename(client.name + "-" + budget.title) + ".pdf");
+  if (download) pdf.save("relatorio-obra-" + safeFilename(client.name + "-" + budget.title) + ".pdf");
+  return pdf.output("datauristring");
+}
+
+export function exportWorkSpreadsheet(client: Client, budget: Budget, sheet: FinancialSheet | undefined, settings: Settings) {
+  return generateWorkSpreadsheetPdf(client, budget, sheet, settings, true);
 }
 
 export function exportConsolidatedSpreadsheet(budgets: Budget[], clients: Client[], sheets: FinancialSheet[], settings: Settings, title: string, start?: Date) {

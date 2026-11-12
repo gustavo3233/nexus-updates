@@ -31,7 +31,7 @@ export function generateOrderPdf(order: Order, client: Client, download = true) 
   writeLabelValue(pdf, "Cliente", client.name, 22, 49, 75);
   writeLabelValue(pdf, "Endereço da obra", order.workAddress, 22, 64, 82);
   writeLabelValue(pdf, "Empresa", settings.companyName || "Nexus Construção e Reformas", 112, 49, 75);
-  writeLabelValue(pdf, "Data e profissional", new Date(order.scheduledDate + "T12:00:00").toLocaleDateString("pt-BR") + " · " + order.professional, 112, 64, 75);
+  writeLabelValue(pdf, "Data e profissional", new Date(order.scheduledDate + "T12:00:00").toLocaleDateString("pt-BR") + (order.scheduledTime ? ` às ${order.scheduledTime}` : "") + " · " + order.professional, 112, 64, 75);
 
   pdf.setFillColor(255, 122, 0); pdf.roundedRect(15, 87, 180, 12, 2, 2, "F");
   pdf.setFont("helvetica", "bold"); pdf.setTextColor(255, 255, 255); pdf.setFontSize(12); pdf.text(order.subject, 21, 95);
@@ -47,4 +47,5 @@ export function generateOrderPdf(order: Order, client: Client, download = true) 
   pdf.setFontSize(8); pdf.setTextColor(100, 116, 139); pdf.text("Assinatura do responsável", 150, 282, { align: "center" });
   pdf.text("Gerado pelo sistema Nexus", 15, 282);
   if (download) pdf.save("pedido-" + order.subject.replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".pdf");
+  return pdf;
 }

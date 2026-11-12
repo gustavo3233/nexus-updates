@@ -4,6 +4,17 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { NexusStore } = require("./store.cjs");
+const { hasPermission, permissionForEntity, requirePermission } = require("../authorization.cjs");
+
+test("permissões da interface e do IPC reconhecem apenas as áreas concedidas", () => {
+  const financialUser = { id: "user-finance", active: true, role: "financeiro", permissions: ["finance.manage"] };
+  assert.equal(hasPermission(financialUser, "finance.manage"), true);
+  assert.equal(hasPermission(financialUser, "clients.manage"), false);
+  assert.equal(permissionForEntity("financial_sheets"), "finance.manage");
+  assert.equal(permissionForEntity("clients"), "clients.manage");
+  assert.throws(() => requirePermission(financialUser, "clients.manage"), /Acesso negado/);
+  assert.doesNotThrow(() => requirePermission(financialUser, "finance.manage"));
+});
 
 async function openCompanyStore(root, id = "company-test", name = "Empresa Teste") {
   const store = new NexusStore(root); await store.open(); store.createCompany({ id, legalName: name, tradeName: name }); return store;
@@ -13,6 +24,21 @@ test("instalação nova inicia sem empresa, CNPJ, certificado ou dados da Nexus"
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-empty-install-")); const store = new NexusStore(root); await store.open(); const snapshot = store.snapshot();
   assert.equal(snapshot.activeCompany, null); assert.equal(snapshot.companies.length, 0); assert.equal(snapshot.clients.length, 0); assert.equal(snapshot.settings, null); assert.equal(snapshot.fiscalSettings, null); assert.equal(snapshot.certificateReferences.length, 0);
   assert.throws(() => store.save("clients", { id: "blocked", name: "Sem empresa", active: true }), /Nenhuma empresa ativa/);
+});
+
+test("licença inicia com teste local de sete dias, sem guardar chave de ativação", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-license-"));
+  const store = await openCompanyStore(root);
+  const status = store.licenseStatus();
+  assert.equal(status.state, "trial_active");
+  assert.equal(status.active, true);
+  assert.equal(status.planCode, "trial-7");
+  assert.equal(status.remainingDays, 7);
+  const stored = store.db.prepare("SELECT data FROM company_licenses WHERE company_id=?").get("company-test");
+  assert.equal(JSON.parse(stored.data).type, "trial");
+  assert.equal(Object.hasOwn(JSON.parse(stored.data), "activationKey"), false);
+  const audit = store.db.prepare("SELECT after_data FROM audit_log WHERE entity='license' AND action='created'").get();
+  assert.equal(Object.hasOwn(JSON.parse(audit.after_data), "token"), false);
 });
 
 test("migração preserva IDs, vínculos e é idempotente", async () => {
@@ -172,4 +198,58 @@ test("financiamento preserva parcelas e bloqueia vínculos entre empresas", asyn
   store.createCompany({ id: "company-b", legalName: "Empresa B", tradeName: "Empresa B" }); store.setActiveCompany("company-b");
   assert.equal(store.snapshot().financings.length, 0);
   assert.throws(() => store.saveFinancing({ ...financing, id: "financing-cross" }), /não pertence à empresa ativa/);
+});
+
+test("exclusão de lançamento respeita a empresa ativa", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-ledger-delete-isolation-"));
+  const store = await openCompanyStore(root, "company-a", "Empresa A");
+  const stamp = "2026-11-06T12:00:00.000Z";
+  store.save("ledger_entries", { id: "ledger-a", kind: "receivable", description: "Recebimento A", category: "Outros", totalAmount: 100, issueDate: "2026-11-06", dueDate: "2026-11-10", supplierName: "", paymentMethod: "Pix", status: "Pendente", notes: "", payments: [], createdAt: stamp, updatedAt: stamp });
+  store.createCompany({ id: "company-b", legalName: "Empresa B", tradeName: "Empresa B" });
+  store.setActiveCompany("company-b");
+  assert.throws(() => store.delete("ledger_entries", "ledger-a"), /não pertence à empresa ativa|Registro não encontrado/);
+  store.setActiveCompany("company-a");
+  store.delete("ledger_entries", "ledger-a");
+  assert.equal(store.snapshot().ledgerEntries.length, 0);
+});
+
+test("superadministrador é gravado com hash e autentica sem expor senha", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-auth-")); const store = await openCompanyStore(root);
+  assert.equal(store.authStatus().hasUsers, false);
+  const user = store.setupAdmin({ displayName: "Administrador", username: "admin.local", password: "senha-segura-123" });
+  assert.equal(user.role, "super_admin"); assert.equal(user.username, "admin.local");
+  assert.throws(() => store.authenticate({ username: "admin.local", password: "errada" }), /Usuário ou senha inválidos/);
+  const authenticated = store.authenticate({ username: "admin.local", password: "senha-segura-123" });
+  assert.equal(authenticated.id, user.id);
+  const row = store.db.prepare("SELECT password_hash,password_salt FROM app_users WHERE id=?").get(user.id);
+  assert.notEqual(row.password_hash, "senha-segura-123"); assert.ok(row.password_salt);
+});
+
+test("usuários e permissões ficam isolados por empresa e exigem superadministrador", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-user-access-")); const store = await openCompanyStore(root, "company-a", "Empresa A");
+  const owner = store.setupAdmin({ displayName: "Admin A", username: "admin.a", password: "senha-segura-123" });
+  const user = store.createUser(owner.id, { displayName: "Financeiro A", username: "financeiro.a", password: "senha-segura-456", role: "financeiro", permissions: ["dashboard.view", "finance.manage"] });
+  assert.deepEqual(store.listUsers(owner.id).map((item) => item.username), ["admin.a", "financeiro.a"]);
+  assert.deepEqual(user.permissions, ["dashboard.view", "finance.manage"]);
+  assert.throws(() => store.listUsers(user.id), /Somente o administrador principal/);
+  store.createCompany({ id: "company-b", legalName: "Empresa B", tradeName: "Empresa B" }); store.setActiveCompany("company-b");
+  assert.throws(() => store.listUsers(owner.id), /Somente o administrador principal/);
+  assert.throws(() => store.updateUser(owner.id, user.id, { active: false }), /Somente o administrador principal/);
+});
+
+test("ferramentas registram retirada com vínculos válidos e permanecem isoladas por empresa", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-tools-")); const store = await openCompanyStore(root, "company-a", "Empresa A"); const stamp = "2026-11-06T12:00:00.000Z";
+  store.save("clients", { id: "client-a", name: "Cliente A", active: true, createdAt: stamp });
+  store.save("budgets", { id: "budget-a", clientId: "client-a", title: "Reforma A", status: "Aprovado", items: [], estimatedExpenses: [], totalValue: 1000, createdAt: stamp });
+  store.save("works", { id: "work-a", number: "OB-A", clientId: "client-a", budgetId: "budget-a", status: "Em execução", statusHistory: [], dailyLogs: [], createdAt: stamp });
+  store.save("professionals", { id: "professional-a", name: "Joana", active: true, createdAt: stamp });
+  const tool = { id: "tool-a", name: "Furadeira", value: 450, condition: "Usada", status: "Em uso", active: true, description: "Com maleta", assignment: { professionalId: "professional-a", workId: "work-a", assignedAt: "2026-11-01", expectedReturnDate: "2026-11-05", notes: "Retirada" }, createdAt: stamp };
+  store.save("tools", tool);
+  assert.equal(store.snapshot().tools[0].assignment.professionalId, "professional-a");
+  assert.throws(() => store.save("tools", { ...tool, id: "tool-invalid", assignment: { ...tool.assignment, professionalId: "missing" } }), /Profissional ou obra inválido/);
+  store.createCompany({ id: "company-b", legalName: "Empresa B", tradeName: "Empresa B" }); store.setActiveCompany("company-b");
+  assert.equal(store.snapshot().tools.length, 0);
+  assert.throws(() => store.save("tools", { ...tool, id: "tool-cross", companyId: "company-a" }), /empresa informada/);
+  store.setActiveCompany("company-a");
+  assert.equal(store.snapshot().tools[0].id, "tool-a");
 });
